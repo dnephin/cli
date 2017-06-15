@@ -1,5 +1,10 @@
 version: 2
 
+defaults:
+  setup_remote_docker: &setup_docker
+    reusable: true
+    exclusive: false
+
 jobs:
 
   lint:
@@ -7,7 +12,7 @@ jobs:
     docker: [{image: 'docker:17.05'}]
     steps:
       - checkout
-      - setup_remote_docker
+      - *setup_docker
       - run:
           command: docker version
       - run:
@@ -23,7 +28,7 @@ jobs:
     docker: [{image: 'docker:17.05'}]
     steps:
       - checkout
-      - setup_remote_docker
+      - *setup_docker
       - run:
           name: "Cross"
           command: |
@@ -40,7 +45,7 @@ jobs:
     docker: [{image: 'docker:17.05'}]
     steps:
       - checkout
-      - setup_remote_docker
+      - *setup_docker
       - run:
           name: "Unit Test with Coverage"
           command: |
@@ -61,7 +66,7 @@ jobs:
     docker: [{image: 'docker:17.05'}]
     steps:
       - checkout
-      - setup_remote_docker
+      - *setup_docker
       - run:
           name: "Validate Vendor, Docs, and Code Generation"
           command: |
