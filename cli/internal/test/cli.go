@@ -8,6 +8,8 @@ import (
 
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/config/configfile"
+	manifeststore "github.com/docker/cli/cli/manifest/store"
+	registryclient "github.com/docker/cli/cli/registry/client"
 	"github.com/docker/docker/client"
 )
 
@@ -98,4 +100,16 @@ func (c *FakeCli) OutBuffer() *bytes.Buffer {
 // ErrBuffer Buffer returns the stderr buffer
 func (c *FakeCli) ErrBuffer() *bytes.Buffer {
 	return c.err
+}
+
+// ManifestStore returns a fake store used for testing
+func (c *FakeCli) ManifestStore() manifeststore.Store {
+	// TODO: use a fake store when a test requires it
+	return nil
+}
+
+// RegistryClient returns a fake client for testing
+func (c *FakeCli) RegistryClient() registryclient.RegistryClient {
+	// TODO: use a fake store when a test requires it
+	return nil
 }

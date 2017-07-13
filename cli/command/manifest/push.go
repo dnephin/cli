@@ -1,62 +1,34 @@
 package manifest
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/Sirupsen/logrus"
+	"github.com/docker/cli/cli"
+	"github.com/docker/cli/cli/command"
+	"github.com/docker/cli/cli/config/configfile"
+	"github.com/docker/cli/cli/manifest/store"
+	"github.com/docker/cli/cli/manifest/types"
+	registryclient "github.com/docker/cli/cli/registry/client"
+	"github.com/docker/distribution/manifest/manifestlist"
+	"github.com/docker/distribution/reference"
+	"github.com/docker/docker/pkg/homedir"
+	"github.com/docker/docker/registry"
+	digest "github.com/opencontainers/go-digest"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"golang.org/x/net/context"
-	"gopkg.in/yaml.v2"
-
-	"github.com/docker/distribution"
-	"github.com/docker/distribution/manifest/manifestlist"
-	"github.com/docker/distribution/reference"
-	"github.com/docker/distribution/registry/api/v2"
-	"github.com/docker/distribution/registry/client"
-	digest "github.com/opencontainers/go-digest"
-
-	//"github.com/docker/cli/cli"
-	"github.com/docker/cli/cli/command"
-	"github.com/docker/cli/cli/config/configfile"
-	"github.com/docker/cli/cli/manifest/fetcher"
-	"github.com/docker/docker/pkg/homedir"
-	"github.com/docker/docker/registry"
 )
 
 type pushOpts struct {
-	newRef string
 	file   string
 	purge  bool
-}
-
-// YamlInput represents the YAML format input to the pushml
-// command.
-type YamlInput struct {
-	Image     string
-	Manifests []YamlManifestEntry
-}
-
-// YamlManifestEntry represents an entry in the list of manifests to
-// be combined into a manifest list, provided via the YAML input
-type YamlManifestEntry struct {
-	Image    string
-	Platform manifestlist.PlatformSpec
-}
-
-// we will store up a list of blobs we must ask the registry
-// to cross-mount into our target namespace
-type blobMount struct {
-	FromRepo reference.Named
-	Digest   digest.Digest
+	target string
 }
 
 // if we have mounted blobs referenced from manifests from
@@ -71,25 +43,22 @@ type manifestPush struct {
 }
 
 type manifestListPush struct {
-	targetRepoInfo    *registry.RepositoryInfo
-	targetRef         reference.Named
-	targetEndpoint    registry.APIEndpoint
-	targetName        string
-	list              manifestlist.ManifestList
-	mountRequests     []manifestPush
-	blobMountRequests []blobMount
+	targetRef     reference.Named
+	list          manifestlist.ManifestList
+	mountRequests []manifestPush
+	manfiestBlobs []reference.Canonical
 }
 
 func newPushListCommand(dockerCli command.Cli) *cobra.Command {
-
 	opts := pushOpts{}
 
 	cmd := &cobra.Command{
-		Use:   "push [newRef | --file pre-annotated-yaml] [--purge=false]",
-		Short: "Push a manifest list for an image to a repository",
-		Args:  checkArgs,
+		Use:   "push [OPTIONS] MANIFEST_LIST",
+		Short: "Push a manifest list to a repository",
+		Args:  cli.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return putManifestList(dockerCli, opts, args)
+			opts.target = args[0]
+			return runPush(dockerCli, opts)
 		},
 	}
 
@@ -100,296 +69,109 @@ func newPushListCommand(dockerCli command.Cli) *cobra.Command {
 	return cmd
 }
 
-func putManifestList(dockerCli command.Cli, opts pushOpts, args []string) error {
-	var (
-		yamlInput                         YamlInput
-		initialRef                        string
-		listPush                          manifestListPush
-		fullTargetRef, targetRef, bareRef reference.Named
-		err                               error
-	)
-
-	if opts.file != "" {
-		yamlInput, err = getYamlInput(opts.file)
-		if err != nil {
-			return err
-		}
-		initialRef = yamlInput.Image
-	} else {
-		initialRef = args[0]
-	}
-
-	fullTargetRef, targetRef, bareRef, err = constructTargetRefs(initialRef)
+func runPush(dockerCli command.Cli, opts pushOpts) error {
+	targetRef, err := normalizeReference(opts.target)
 	if err != nil {
 		return err
 	}
-	logrus.Infof("beginning push of manifests into %s", fullTargetRef.String())
 
-	targetRepoInfo, err := registry.ParseRepositoryInfo(fullTargetRef)
+	listPush, err := listFromTransaction(dockerCli.ManifestStore(), targetRef)
 	if err != nil {
-		return errors.Wrapf(err, "error parsing repository name for manifest list (%s): %v", opts.newRef)
+		return err
 	}
-	targetEndpoint, targetRepoName, err := setupRepo(targetRepoInfo)
-	if err != nil {
-		return errors.Wrapf(err, "error setting up repository endpoint and references for %q: %v", targetRef)
-	}
-	logrus.Debugf("creating target ref: %s", fullTargetRef.String())
 
 	ctx := context.Background()
-
-	// Now create the manifest list payload by looking up the manifest schemas
-	// for the constituent images:
-	logrus.Debugf("retrieving digests of images...")
-	if opts.file == "" {
-		listPush, err = listFromTransaction(targetRepoInfo, targetRepoName, fullTargetRef.String())
-	} else {
-		listPush, err = listFromYAML(dockerCli, fullTargetRef, targetRepoInfo, targetRepoName, yamlInput)
-	}
-	if err != nil {
-		return err
-	}
-
-	listPush.targetRepoInfo = targetRepoInfo
-	listPush.targetName = targetRepoName
-	listPush.targetRef = targetRef
-	listPush.targetEndpoint = targetEndpoint
-
-	err = doListPush(ctx, dockerCli, listPush, bareRef)
-	if err != nil {
+	if err := pushList(ctx, dockerCli, listPush, targetRef); err != nil {
 		return err
 	}
 	if opts.purge {
-		targetFilename, _ := mfToFilename(fullTargetRef.String(), "")
-		logrus.Debugf("deleting files at %s", targetFilename)
-		if err := os.RemoveAll(targetFilename); err != nil {
-			// Not a fatal error
-			logrus.Info("unable to clean up manifest files in %s", targetFilename)
-		}
+		return dockerCli.ManifestStore().Remove(targetRef)
 	}
 	return nil
 }
 
-func doListPush(ctx context.Context, dockerCli command.Cli, listPush manifestListPush, bareRef reference.Named) error {
-
-	targetURL := listPush.targetEndpoint.URL.String()
-	// Set the schema version
+func pushList(ctx context.Context, dockerCli command.Cli, listPush manifestListPush, bareRef reference.Named) error {
+	// TODO: this should be done somewhere else
 	listPush.list.Versioned = manifestlist.SchemaVersion
 
-	urlBuilder, err := v2.NewURLBuilderFromString(targetURL, false)
-	logrus.Debugf("manifest: put: target endpoint url: %s", targetURL)
-	if err != nil {
-		return errors.Wrapf(err, "can't create URL builder from endpoint (%s): %v", targetURL)
-	}
-	pushURL, err := createManifestURLFromRef(listPush.targetRef, urlBuilder)
-	if err != nil {
-		return errors.Wrapf(err, "error setting up repository endpoint and references for %q: %v", listPush.targetRef)
-	}
-	logrus.Debugf("manifest list push url: %s", pushURL)
-
-	deserializedManifestList, err := manifestlist.FromDescriptors(listPush.list.Manifests)
-	if err != nil {
-		return errors.Wrap(err, "cannot deserialize manifest list")
-	}
-	mediaType, p, err := deserializedManifestList.Payload()
-	logrus.Debugf("mediaType of manifestList: %s", mediaType)
-	if err != nil {
-		return errors.Wrap(err, "cannot retrieve payload for HTTP PUT of manifest list")
-
-	}
-	putRequest, err := http.NewRequest("PUT", pushURL, bytes.NewReader(p))
-	if err != nil {
-		return errors.Wrap(err, "HTTP PUT request creation failed")
-	}
-	putRequest.Header.Set("Content-Type", mediaType)
-
-	tr, err := fetcher.GetDistClientTransport(ctx, dockerCli, listPush.targetRepoInfo, listPush.targetEndpoint, listPush.targetName)
-	if err != nil {
-		return errors.Wrap(err, "failed to setup HTTP client to repository")
-	}
-	httpClient := &http.Client{Transport: tr}
-
-	// before we push the manifest list, if we have any blob mount requests, we need
-	// to ask the registry to mount those blobs in our target so they are available
-	// as references
-	if err := mountBlobs(ctx, httpClient, targetURL, listPush.targetRef, listPush.blobMountRequests); err != nil {
-		return errors.Wrap(err, "couldn't mount blobs for cross-repository push")
+	rclient := dockerCli.RegistryClient()
+	if err := mountBlobs(ctx, rclient, listPush.targetRef, listPush.manfiestBlobs); err != nil {
+		return err
 	}
 
 	// we also must push any manifests that are referenced in the manifest list into
 	// the target namespace
 	// Use the untagged target for this so the digest is used
 	// *could* i use targetRef instead of bareRef??
-	if err := pushReferences(httpClient, urlBuilder, bareRef, listPush.mountRequests); err != nil {
+	if err := pushReferences(ctx, rclient, bareRef, listPush.mountRequests); err != nil {
 		return errors.Wrap(err, "couldn't push manifests referenced in our manifest list")
 	}
 
-	resp, err := httpClient.Do(putRequest)
+	request, err := manifestRequestFromManifestList(listPush.list)
 	if err != nil {
-		return errors.Wrap(err, "v2 registry PUT of manifest list failed")
+		return err
 	}
-	defer resp.Body.Close()
-
-	if statusSuccess(resp.StatusCode) {
-		dgstHeader := resp.Header.Get("Docker-Content-Digest")
-		dgst, err := digest.Parse(dgstHeader)
-		if err != nil {
-			return err
-		}
-		logrus.Infof("successfully pushed manifest list %s with digest %s", listPush.targetRef, dgst)
-		return nil
+	dgst, err := rclient.PutManifest(ctx, listPush.targetRef, request)
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("registry push unsuccessful: response %d: %s", resp.StatusCode, resp.Status)
+	fmt.Fprintln(dockerCli.Out(), dgst.String())
+	return nil
 }
 
-func listFromTransaction(targetRepoInfo *registry.RepositoryInfo, targetRepoName, targetRef string) (manifestListPush, error) {
-	var (
-		manifestList      manifestlist.ManifestList
-		blobMountRequests []blobMount
-		manifestRequests  []manifestPush
-		listPush          manifestListPush
-		manifests         []string
-		err               error
-	)
-	if manifests, err = getListFilenames(targetRef); err != nil {
+func listFromTransaction(manifestStore store.Store, targetRef reference.Named) (manifestListPush, error) {
+	listPush := manifestListPush{targetRef: targetRef}
+	targetRepoInfo, err := registry.ParseRepositoryInfo(targetRef)
+	if err != nil {
 		return listPush, err
 	}
-	// @TODO: Is this possible, or will manifests just be nil??
+	_, targetRepoName, err := setupRepo(targetRepoInfo)
+	if err != nil {
+		return listPush, err
+	}
+
+	manifests, err := manifestStore.GetList(targetRef)
+	if err != nil {
+		return listPush, err
+	}
 	if len(manifests) == 0 {
 		return listPush, fmt.Errorf("%s not found", targetRef)
 	}
 	// manifests is a list of file paths
-	for _, manifestFile := range manifests {
-		fileParts := strings.Split(manifestFile, string(filepath.Separator))
-		numParts := len(fileParts)
-		mfstInspect, err := localManifestToManifestInspect(fileParts[numParts-1], fileParts[numParts-2])
+	for _, imageManifest := range manifests {
+		if imageManifest.Platform.Architecture == "" || imageManifest.Platform.OS == "" {
+			return listPush, errors.Errorf(
+				"manifest %s must have an OS and Architecture to be pushed to a registry", imageManifest.Ref)
+		}
+		manifest, repoInfo, err := buildManifestDescriptor(targetRepoInfo, imageManifest)
 		if err != nil {
 			return listPush, err
 		}
-		if mfstInspect.Architecture == "" || mfstInspect.OS == "" {
-			return listPush, fmt.Errorf("malformed manifest object. cannot push to registry")
-		}
-		// @TODO: Why am I getting another repoInfo here?
-		manifest, repoInfo, err := buildManifestObj(targetRepoInfo, mfstInspect)
-		if err != nil {
-			return listPush, err
-		}
-		manifestList.Manifests = append(manifestList.Manifests, manifest)
+		listPush.list.Manifests = append(listPush.list.Manifests, manifest)
 
 		// if this image is in a different repo, we need to add the layer/blob digests to the list of
 		// requested blob mounts (cross-repository push) before pushing the manifest list
 		// @TODO: Test pushing manifest list where targetRepoName == manifestRepoName for all manifests
 		manifestRepoName := reference.Path(repoInfo.Name)
 		if targetRepoName != manifestRepoName {
-			bmr, mr := buildBlobMountRequestLists(mfstInspect, targetRepoInfo.Name, repoInfo.Name)
-			blobMountRequests = append(blobMountRequests, bmr...)
-			manifestRequests = append(manifestRequests, mr...)
+			blobs, err := buildBlobRequestList(imageManifest, targetRepoInfo.Name, repoInfo.Name)
+			if err != nil {
+				return listPush, err
+			}
+			listPush.manfiestBlobs = append(listPush.manfiestBlobs, blobs...)
+
+			manifestPush, err := buildManifestPush(imageManifest, targetRepoInfo.Name, repoInfo.Name)
+			if err != nil {
+				return listPush, err
+			}
+			listPush.mountRequests = append(listPush.mountRequests, manifestPush)
 		}
 	}
-	listPush.mountRequests = manifestRequests
-	listPush.blobMountRequests = blobMountRequests
-	listPush.list = manifestList
-
 	return listPush, nil
 }
 
-func listFromYAML(dockerCli command.Cli, targetRef reference.Named, targetRepoInfo *registry.RepositoryInfo, targetRepoName string, yamlInput YamlInput) (manifestListPush, error) {
-	var (
-		manifestList      manifestlist.ManifestList
-		blobMountRequests []blobMount
-		manifestRequests  []manifestPush
-		listPush          manifestListPush
-	)
-	for _, mfEntry := range yamlInput.Manifests {
-		mfstInspects, repoInfo, err := getImageData(dockerCli, mfEntry.Image, targetRef.Name(), true)
-		if err != nil {
-			return listPush, err
-		}
-		if len(mfstInspects) == 0 {
-			return listPush, fmt.Errorf("manifest %s not found", mfEntry.Image)
-		}
-		mfstInspect := mfstInspects[0]
-		if mfstInspect.Architecture == "" || mfstInspect.OS == "" {
-			return listPush, fmt.Errorf("malformed manifest object. cannot push to registry")
-		}
-		manifest, repoInfo, err := buildManifestObj(targetRepoInfo, mfstInspect)
-		if err != nil {
-			return listPush, err
-		}
-		manifestList.Manifests = append(manifestList.Manifests, manifest)
-
-		// if this image is in a different repo, we need to add the layer/blob digests to the list of
-		// requested blob mounts (cross-repository push) before pushing the manifest list
-		manifestRepoName := reference.Path(repoInfo.Name)
-		if targetRepoName != manifestRepoName {
-			bmr, mr := buildBlobMountRequestLists(mfstInspect, targetRepoInfo.Name, repoInfo.Name)
-			blobMountRequests = append(blobMountRequests, bmr...)
-			manifestRequests = append(manifestRequests, mr...)
-
-		}
-	}
-	listPush.mountRequests = manifestRequests
-	listPush.blobMountRequests = blobMountRequests
-	listPush.list = manifestList
-	return listPush, nil
-}
-
-func constructTargetRefs(initialRef string) (reference.Named, reference.Named, reference.Named, error) {
-	var (
-		targetRefNoDomain reference.Named
-		targetRefNoTag    reference.Named
-		fullTargetRef     reference.Named
-		err               error
-	)
-
-	fullTargetRef, err = reference.ParseNormalizedNamed(initialRef)
-	if err != nil {
-		return nil, nil, nil, errors.Wrapf(err, "error parsing name for manifest list (%s): %v")
-	}
-	if _, isDigested := fullTargetRef.(reference.Canonical); !isDigested {
-		fullTargetRef = reference.TagNameOnly(fullTargetRef)
-	}
-	tagIndex := strings.LastIndex(fullTargetRef.String(), ":")
-	logrus.Debugf("fullTargetRef. should be complete by now: %s", fullTargetRef.String())
-	if tagIndex < 0 {
-		return nil, nil, nil, fmt.Errorf("malformed reference")
-	}
-	tag := fullTargetRef.String()[tagIndex+1:]
-	targetRefNoTag, err = reference.WithName(reference.Path(fullTargetRef))
-	logrus.Debugf("targetRefNoTag should have no name and no tag: %s", targetRefNoTag.String())
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	targetRefNoDomain, _ = reference.WithTag(targetRefNoTag, tag)
-	logrus.Debugf("targetRefNoDomain should have no domain but a tag? %s", targetRefNoDomain.String())
-
-	return fullTargetRef, targetRefNoDomain, targetRefNoTag, nil
-}
-
-func getYamlInput(yamlFile string) (YamlInput, error) {
-	logrus.Debugf("YAML file: %s", yamlFile)
-
-	if _, err := os.Stat(yamlFile); err != nil {
-		logrus.Debugf("unable to open file: %s", yamlFile)
-	}
-
-	var yamlInput YamlInput
-	yamlBuf, err := ioutil.ReadFile(yamlFile)
-	if err != nil {
-		return YamlInput{}, errors.Wrapf(err, "can't read YAML file %s", yamlFile)
-	}
-	if err = yaml.Unmarshal(yamlBuf, &yamlInput); err != nil {
-		return YamlInput{}, errors.Wrapf(err, "can't unmarshal YAML file %s", yamlFile)
-	}
-	return yamlInput, nil
-}
-
-func buildManifestObj(targetRepo *registry.RepositoryInfo, mfInspect fetcher.ImgManifestInspect) (manifestlist.ManifestDescriptor, *registry.RepositoryInfo, error) {
-
-	manifestRef, err := reference.ParseNormalizedNamed(mfInspect.RefName)
-	if err != nil {
-		return manifestlist.ManifestDescriptor{}, nil, err
-	}
-	repoInfo, err := registry.ParseRepositoryInfo(manifestRef)
+func buildManifestDescriptor(targetRepo *registry.RepositoryInfo, imageManifest types.ImageManifest) (manifestlist.ManifestDescriptor, *registry.RepositoryInfo, error) {
+	repoInfo, err := registry.ParseRepositoryInfo(imageManifest.Ref)
 	if err != nil {
 		return manifestlist.ManifestDescriptor{}, nil, err
 	}
@@ -400,60 +182,57 @@ func buildManifestObj(targetRepo *registry.RepositoryInfo, mfInspect fetcher.Img
 		return manifestlist.ManifestDescriptor{}, nil, fmt.Errorf("cannot use source images from a different registry than the target image: %s != %s", manifestRepoHostname, targetRepoHostname)
 	}
 
-	manifest := manifestlist.ManifestDescriptor{
-		Platform: manifestlist.PlatformSpec{
-			Architecture: mfInspect.Architecture,
-			OS:           mfInspect.OS,
-			OSVersion:    mfInspect.OSVersion,
-			OSFeatures:   mfInspect.OSFeatures,
-			Variant:      mfInspect.Variant,
-			Features:     mfInspect.Features,
-		},
-	}
-	manifest.Descriptor.Digest = mfInspect.Digest
-	manifest.Size = mfInspect.Size
-	manifest.MediaType = mfInspect.MediaType
-
-	err = manifest.Descriptor.Digest.Validate()
+	mediaType, raw, err := imageManifest.Payload()
 	if err != nil {
-		return manifestlist.ManifestDescriptor{}, nil, errors.Wrapf(err, "Digest parse of image %q failed with error: %v", manifestRef)
+		return manifestlist.ManifestDescriptor{}, nil, err
+	}
+
+	manifest := manifestlist.ManifestDescriptor{
+		Platform: imageManifest.Platform,
+	}
+	manifest.Descriptor.Digest = digest.FromBytes(raw)
+	manifest.Size = int64(len(raw))
+	manifest.MediaType = mediaType
+
+	if err = manifest.Descriptor.Digest.Validate(); err != nil {
+		return manifestlist.ManifestDescriptor{}, nil, errors.Wrapf(err,
+			"digest parse of image %q failed with error: %v", imageManifest.Ref)
 	}
 
 	return manifest, repoInfo, nil
 }
 
-func buildBlobMountRequestLists(mfstInspect fetcher.ImgManifestInspect, targetRepoName, mfRepoName reference.Named) ([]blobMount, []manifestPush) {
-
-	var (
-		blobMountRequests []blobMount
-		manifestRequests  []manifestPush
-	)
-
+func buildBlobRequestList(imageManifest types.ImageManifest, targetRepoName, mfRepoName reference.Named) ([]reference.Canonical, error) {
 	logrus.Debugf("adding manifest references of %q to blob mount requests to %s", mfRepoName, targetRepoName)
-	for _, layer := range mfstInspect.References {
-		dgst, _ := digest.Parse(layer)
-		blobMountRequests = append(blobMountRequests, blobMount{FromRepo: targetRepoName, Digest: dgst})
+
+	var blobReferences []reference.Canonical
+	for _, blobDigest := range imageManifest.Blobs() {
+		canonical, err := reference.WithDigest(targetRepoName, blobDigest)
+		if err != nil {
+			return nil, err
+		}
+		blobReferences = append(blobReferences, canonical)
 	}
-	// also must add the manifest to be pushed in the target namespace
+	return blobReferences, nil
+}
+
+func buildManifestPush(imageManifest types.ImageManifest, targetRepoName, mfRepoName reference.Named) (manifestPush, error) {
 	logrus.Debugf("adding manifest %q -> to be pushed to %q as a manifest reference", mfRepoName, targetRepoName)
-	manifestRequests = append(manifestRequests, manifestPush{
-		Name:      mfRepoName.String(),
-		Digest:    mfstInspect.Digest.String(),
-		JSONBytes: mfstInspect.CanonicalJSON,
-		MediaType: mfstInspect.MediaType,
-	})
-	return blobMountRequests, manifestRequests
-}
 
-func createManifestURLFromRef(targetRef reference.Named, urlBuilder *v2.URLBuilder) (string, error) {
-
-	manifestURL, err := urlBuilder.BuildManifestURL(targetRef)
+	mediaType, raw, err := imageManifest.Payload()
 	if err != nil {
-		return "", errors.Wrap(err, "failed to build manifest URL from target reference")
+		return manifestPush{}, err
 	}
-	return manifestURL, nil
+
+	return manifestPush{
+		Name:      mfRepoName.String(),
+		Digest:    digest.FromBytes(raw).String(), // TODO: is this right?
+		JSONBytes: raw,
+		MediaType: mediaType,
+	}, nil
 }
 
+// TODO: look into duplicated with client
 func setupRepo(repoInfo *registry.RepositoryInfo) (registry.APIEndpoint, string, error) {
 	endpoint, err := selectPushEndpoint(repoInfo)
 	if err != nil {
@@ -538,90 +317,47 @@ func loadLocalInsecureRegistries() ([]string, error) {
 	return insecureRegistries, nil
 }
 
-func pushReferences(httpClient *http.Client, urlBuilder *v2.URLBuilder, ref reference.Named, manifests []manifestPush) error {
+func pushReferences(ctx context.Context, client registryclient.RegistryClient, ref reference.Named, manifests []manifestPush) error {
 	for _, manifest := range manifests {
 		dgst, err := digest.Parse(manifest.Digest)
 		if err != nil {
-			return errors.Wrapf(err, "error parsing manifest digest (%s) for referenced manifest %q: %v", manifest.Digest, manifest.Name)
+			return errors.Wrapf(err, "error parsing manifest digest (%s) for referenced manifest %q", manifest.Digest, manifest.Name)
 		}
 		targetRef, err := reference.WithDigest(ref, dgst)
 		if err != nil {
-			return errors.Wrapf(err, "error creating manifest digest target for referenced manifest %q: %v", manifest.Name)
-		}
-		pushURL, err := urlBuilder.BuildManifestURL(targetRef)
-		if err != nil {
-			return errors.Wrapf(err, "error setting up manifest push URL for manifest references for %q: %v", manifest.Name)
+			return err
 		}
 
-		pushRequest, err := http.NewRequest("PUT", pushURL, bytes.NewReader(manifest.JSONBytes))
-		if err != nil {
-			return errors.Wrap(err, "HTTP PUT request creation for manifest reference push failed")
-		}
-		pushRequest.Header.Set("Content-Type", manifest.MediaType)
-		resp, err := httpClient.Do(pushRequest)
-		if err != nil {
-			return errors.Wrap(err, "PUT of manifest reference failed")
-		}
-
-		resp.Body.Close()
-		if !statusSuccess(resp.StatusCode) {
-			return fmt.Errorf("referenced manifest push unsuccessful: response %d: %s", resp.StatusCode, resp.Status)
-		}
-		dgstHeader := resp.Header.Get("Docker-Content-Digest")
-		dgstResult, err := digest.Parse(dgstHeader)
-		if err != nil {
-			return errors.Wrap(err, "couldn't parse pushed manifest digest response")
-		}
-		logrus.Infof("pushed manifest (%s) digest:  %s", manifest.Name, string(dgstResult))
-	}
-	return nil
-}
-
-func mountBlobs(ctx context.Context, httpClient *http.Client, targetURL string, ref reference.Named, blobsRequested []blobMount) error {
-	for _, blob := range blobsRequested {
-		repo, err := client.NewRepository(ctx, ref, targetURL, httpClient.Transport)
+		// TODO: build manifestRequest before this function and pass them in
+		newDigest, err := client.PutManifest(ctx, targetRef, registryclient.PutManifestOptions{
+			MediaType: manifest.MediaType,
+			Payload:   manifest.JSONBytes,
+		})
 		if err != nil {
 			return err
 		}
-		bs := repo.Blobs(ctx)
-		fromCanonical, err := reference.WithDigest(blob.FromRepo, blob.Digest)
-		if err != nil {
-			return err
-		}
-		lu, err := bs.Create(ctx, client.WithMountFrom(fromCanonical))
-		if err != nil {
-			if _, ok := err.(distribution.ErrBlobMounted); ok {
-				// mount successful
-			}
-		} else {
-			// registry treated this as a normal upload
-			lu.Cancel(ctx)
-		}
-		logrus.Debugf("mount of blob %s succeeded", blob.Digest.String())
+		logrus.Infof("Pushed manifest %s with digest: %s", manifest.Name, newDigest)
 	}
 	return nil
 }
 
-func checkArgs(cmd *cobra.Command, args []string) error {
-	useErr := fmt.Errorf("Incorrect command format.\n Usage: %s", cmd.Use)
-	numArgs := len(args)
-	if numArgs > 1 {
-		return useErr
-	}
-	fileFlag := cmd.Flags().Lookup("file")
-	if fileFlag.Changed && numArgs != 0 {
-		return useErr
-	}
-	if !fileFlag.Changed && numArgs == 0 {
-		return useErr
-	}
-	purgeFlag := cmd.Flags().Lookup("purge")
-	if purgeFlag.Changed && fileFlag.Changed {
-		return fmt.Errorf("using '--purge' doesn't make sense with '--file'")
+func mountBlobs(ctx context.Context, client registryclient.RegistryClient, ref reference.Named, blobs []reference.Canonical) error {
+	for _, blob := range blobs {
+		if err := client.MountBlob(ctx, ref, blob); err != nil {
+			return errors.Wrapf(err, "failed to mount blob %s", blob)
+		}
 	}
 	return nil
 }
 
-func statusSuccess(status int) bool {
-	return status >= 200 && status <= 399
+func manifestRequestFromManifestList(list manifestlist.ManifestList) (registryclient.PutManifestOptions, error) {
+	deserializedManifestList, err := manifestlist.FromDescriptors(list.Manifests)
+	if err != nil {
+		return registryclient.PutManifestOptions{}, errors.Wrap(err, "failed to deserialize manifest list")
+	}
+	mediaType, rawBytes, _ := deserializedManifestList.Payload()
+	return registryclient.PutManifestOptions{
+		MediaType: mediaType,
+		Payload:   rawBytes,
+	}, nil
 }
