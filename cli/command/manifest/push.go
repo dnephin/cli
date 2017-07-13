@@ -300,7 +300,12 @@ func listFromYAML(dockerCli command.Cli, targetRef reference.Named, targetRepoIn
 		listPush          manifestListPush
 	)
 	for _, mfEntry := range yamlInput.Manifests {
-		mfstInspects, repoInfo, err := getImageData(dockerCli, mfEntry.Image, targetRef.Name(), true)
+		namedRef, err := reference.ParseNormalizedNamed(mfEntry.Image)
+		if err != nil {
+			// TODO: wrap error?
+			return listPush, err
+		}
+		mfstInspects, repoInfo, err := getImageData(dockerCli, namedRef, targetRef.Name(), true)
 		if err != nil {
 			return listPush, err
 		}

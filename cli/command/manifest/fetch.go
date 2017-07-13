@@ -16,23 +16,11 @@ import (
 	"github.com/docker/docker/registry"
 )
 
-// nolint: gocyclo
-func getImageData(dockerCli command.Cli, name string, transactionID string, fetchOnly bool) ([]fetcher.ImgManifestInspect, *registry.RepositoryInfo, error) {
-
-	var (
-		lastErr                    error
-		foundImages                []fetcher.ImgManifestInspect
-		confirmedTLSRegistries     = make(map[string]bool)
-		namedRef, transactionNamed reference.Named
-		err                        error
-		normalName                 string
-	)
-
-	if namedRef, err = reference.ParseNormalizedNamed(name); err != nil {
-		return nil, nil, errors.Wrapf(err, "Error parsing reference for %s: %s", name)
-	}
+func getLocalImageManifestData(namedRef reference.Named, transactionID string) ([]fetcher.ImgManifestInspect, *registry.RepositoryInfo, error) {
+	// TODO: extract as a function, duplicated in many places (Ex: annotate command)
 	if transactionID != "" {
-		if transactionNamed, err = reference.ParseNormalizedNamed(transactionID); err != nil {
+		transactionNamed, err := reference.ParseNormalizedNamed(transactionID)
+		if err != nil {
 			return nil, nil, errors.Wrapf(err, "Error parsing reference for %s: %s", transactionID)
 		}
 		if _, isDigested := transactionNamed.(reference.Canonical); !isDigested {
@@ -45,8 +33,7 @@ func getImageData(dockerCli command.Cli, name string, transactionID string, fetc
 	if _, isDigested := namedRef.(reference.Canonical); !isDigested {
 		namedRef = reference.TagNameOnly(namedRef)
 	}
-	normalName = namedRef.String()
-	logrus.Debugf("getting image data for ref: %s", normalName)
+	logrus.Debugf("getting image data for ref: %s", namedRef)
 
 	// Resolve the Repository name from fqn to RepositoryInfo
 	// This calls TrimNamed, which removes the tag, so always use namedRef for the image.
@@ -57,24 +44,30 @@ func getImageData(dockerCli command.Cli, name string, transactionID string, fetc
 
 	// If this is a manifest list, let's check for it locally so a user can see any modifications
 	// he/she has made.
-	logrus.Debugf("Checking locally for %s", normalName)
-	foundImages, err = loadManifest(makeFilesafeName(normalName), transactionID)
+	logrus.Debugf("Checking locally for %s", namedRef)
+	var foundImages []fetcher.ImgManifestInspect
+	foundImages, err = loadManifest(makeFilesafeName(namedRef.String()), transactionID)
 	if err != nil {
 		return nil, nil, err
 	}
 	if len(foundImages) > 0 {
-		// Great, no reason to pull from the registry.
 		return foundImages, repoInfo, nil
 	}
 	// For a manifest list request, the name should be used as the transactionID
-	foundImages, err = loadManifestList(normalName)
+	foundImages, err = loadManifestList(namedRef.String())
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(foundImages) > 0 {
-		return foundImages, repoInfo, nil
+	return foundImages, repoInfo, nil
+}
+
+func getImageData(dockerCli command.Cli, namedRef reference.Named, transactionID string, fetchOnly bool) ([]fetcher.ImgManifestInspect, *registry.RepositoryInfo, error) {
+	foundImages, repoInfo, err := getLocalImageManifestData(namedRef, transactionID) // TODO:
+	if err != nil || len(foundImages) > 0 {
+		return foundImages, repoInfo, err
 	}
 
+	// TODO: this should be passed in
 	ctx := context.Background()
 
 	authConfig := command.ResolveAuthConfig(ctx, dockerCli, repoInfo.Index)
@@ -91,6 +84,8 @@ func getImageData(dockerCli command.Cli, name string, transactionID string, fetc
 	logrus.Debugf("manifest pull: endpoints: %v", endpoints)
 
 	// Try to find the first endpoint that is *both* v2 and using TLS.
+	var confirmedTLSRegistries = make(map[string]bool)
+	var lastErr error
 	for _, endpoint := range endpoints {
 		// make sure I can reach the registry, same as docker pull does
 		if endpoint.Version == registry.APIVersion1 {
@@ -105,7 +100,7 @@ func getImageData(dockerCli command.Cli, name string, transactionID string, fetc
 			}
 		}
 
-		logrus.Debugf("Trying to fetch image manifest of %s repository from %s %s", normalName, endpoint.URL, endpoint.Version)
+		logrus.Debugf("Trying to fetch image manifest of %s repository from %s %s", namedRef, endpoint.URL, endpoint.Version)
 
 		mfFetcher, err := fetcher.NewManifestFetcher(endpoint, repoInfo, authConfig, registryService)
 		if err != nil {
@@ -113,6 +108,7 @@ func getImageData(dockerCli command.Cli, name string, transactionID string, fetc
 			continue
 		}
 
+		var foundImages []fetcher.ImgManifestInspect
 		if foundImages, err = mfFetcher.Fetch(ctx, dockerCli, namedRef); err != nil {
 			// Can a manifest fetch be cancelled? I don't think so...
 			if _, ok := err.(fetcher.RecoverableError); ok {
@@ -126,13 +122,13 @@ func getImageData(dockerCli command.Cli, name string, transactionID string, fetc
 		}
 
 		if transactionID == "" && len(foundImages) > 1 {
-			transactionID = normalName
+			transactionID = namedRef.String()
 		}
 		// Additionally, we're never storing on inspect, so if we're asked to save images it's for a create,
 		// and this function will have been called for each image in the create. In that case we'll have an
 		// image name *and* a transaction ID. IOW, foundImages will be only one image.
 		if !fetchOnly {
-			if err := storeManifest(foundImages[0], makeFilesafeName(normalName), transactionID); err != nil {
+			if err := storeManifest(foundImages[0], makeFilesafeName(namedRef.String()), transactionID); err != nil {
 				logrus.Debugf("error storing manifests: %s", err)
 			}
 		}
@@ -140,7 +136,7 @@ func getImageData(dockerCli command.Cli, name string, transactionID string, fetc
 	}
 
 	if lastErr == nil {
-		lastErr = fmt.Errorf("no endpoints found for %s", normalName)
+		lastErr = fmt.Errorf("no endpoints found for %s", namedRef)
 	}
 
 	return nil, nil, lastErr
@@ -148,7 +144,6 @@ func getImageData(dockerCli command.Cli, name string, transactionID string, fetc
 }
 
 func loadManifest(manifest string, transaction string) ([]fetcher.ImgManifestInspect, error) {
-
 	// Load either a single manifest (if transaction is "", that's fine), or a
 	// manifest list
 	var foundImages []fetcher.ImgManifestInspect
