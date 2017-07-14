@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/Sirupsen/logrus"
-	"github.com/docker/cli/cli/command"
 	"github.com/docker/distribution"
 	"github.com/docker/distribution/manifest/manifestlist"
 	"github.com/docker/distribution/manifest/schema2"
@@ -18,6 +17,7 @@ import (
 	"github.com/docker/distribution/registry/client"
 	"github.com/docker/distribution/registry/client/auth"
 	"github.com/docker/distribution/registry/client/transport"
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/dockerversion"
 	"github.com/docker/docker/registry"
 	digest "github.com/opencontainers/go-digest"
@@ -57,19 +57,19 @@ func validateEndpoint(endpoint registry.APIEndpoint) error {
 
 // FetchOptions are the options required to fetch a image data from a registry
 type FetchOptions struct {
-	RepoInfo *registry.RepositoryInfo
-	Endpoint registry.APIEndpoint
-	NamedRef reference.Named
+	AuthConfig types.AuthConfig
+	RepoInfo   *registry.RepositoryInfo
+	Endpoint   registry.APIEndpoint
+	NamedRef   reference.Named
 }
 
-// TODO: remove dockerCli arg
 // Fetch and return summarized image information or a manifest list
-func Fetch(ctx context.Context, dockerCli command.Cli, opts FetchOptions) ([]ImgManifestInspect, error) {
+func Fetch(ctx context.Context, opts FetchOptions) ([]ImgManifestInspect, error) {
 	if err := validateEndpoint(opts.Endpoint); err != nil {
 		return nil, err
 	}
 
-	mf, err := newV2Repository(ctx, dockerCli, opts.RepoInfo, opts.Endpoint)
+	mf, err := opts.newFetcher(ctx)
 	if err != nil {
 		logrus.Debugf("Error getting v2 registry: %v", err)
 		return nil, err
@@ -315,31 +315,30 @@ func (mf *manifestFetcher) pullManifestList(ctx context.Context, ref reference.N
 	return &manifestListInspect{imageInfos: imageList, mfInfos: mfInfos, mediaTypes: mediaType}, err
 }
 
-func newV2Repository(ctx context.Context, dockerCli command.Cli, repoInfo *registry.RepositoryInfo, endpoint registry.APIEndpoint) (*manifestFetcher, error) {
-	repoName := repoInfo.Name.Name()
+func (opts FetchOptions) newFetcher(ctx context.Context) (*manifestFetcher, error) {
+	repoName := opts.RepoInfo.Name.Name()
 	// If endpoint does not support CanonicalName, use the RemoteName instead
-	if endpoint.TrimHostname {
-		repoName = reference.Path(repoInfo.Name)
+	if opts.Endpoint.TrimHostname {
+		repoName = reference.Path(opts.RepoInfo.Name)
 	}
 	repoNameRef, err := reference.WithName(repoName)
 	if err != nil {
 		return nil, err
 	}
 
-	tr, err := GetDistClientTransport(ctx, dockerCli, repoInfo, endpoint, repoName)
+	tr, err := GetDistClientTransport(opts.AuthConfig, opts.Endpoint, repoName)
 	if err != nil {
 		return nil, err
 	}
-	repo, err := client.NewRepository(ctx, repoNameRef, endpoint.URL.String(), tr)
+	repo, err := client.NewRepository(ctx, repoNameRef, opts.Endpoint.URL.String(), tr)
 	if err != nil {
 		return nil, err
 	}
 	return &manifestFetcher{repo: repo}, nil
 }
 
-// TODO: this should accept authConfig, not 3 extra args
 // GetDistClientTransport builds a transport for use in communicating with a registry
-func GetDistClientTransport(ctx context.Context, dockerCli command.Cli, repoInfo *registry.RepositoryInfo, endpoint registry.APIEndpoint, repoName string) (http.RoundTripper, error) {
+func GetDistClientTransport(authConfig types.AuthConfig, endpoint registry.APIEndpoint, repoName string) (http.RoundTripper, error) {
 	// get the http transport, this will be used in a client to upload manifest
 	base := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -353,7 +352,6 @@ func GetDistClientTransport(ctx context.Context, dockerCli command.Cli, repoInfo
 		DisableKeepAlives:   true,
 	}
 
-	authConfig := command.ResolveAuthConfig(ctx, dockerCli, repoInfo.Index)
 	modifiers := registry.DockerHeaders(dockerversion.DockerUserAgent(nil), http.Header{})
 	authTransport := transport.NewTransport(base, modifiers...)
 	challengeManager, confirmedV2, err := registry.PingV2Registry(endpoint.URL, authTransport)

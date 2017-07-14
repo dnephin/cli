@@ -81,15 +81,18 @@ func getImageData(dockerCli command.Cli, namedRef reference.Named, transactionID
 	}
 	logrus.Debugf("manifest pull: endpoints: %v", endpoints)
 
+	authConfig := command.ResolveAuthConfig(ctx, dockerCli, repoInfo.Index)
+
 	// Try to find the first endpoint that is *both* v2 and using TLS.
 	confirmedTLSRegistries := make(map[string]bool)
 	for _, endpoint := range endpoints {
 		opts := fetcher.FetchOptions{
-			Endpoint: endpoint,
-			RepoInfo: repoInfo,
-			NamedRef: namedRef,
+			AuthConfig: authConfig,
+			Endpoint:   endpoint,
+			RepoInfo:   repoInfo,
+			NamedRef:   namedRef,
 		}
-		foundImages, err := fetchFromEndpoint(ctx, dockerCli, confirmedTLSRegistries, opts)
+		foundImages, err := fetchFromEndpoint(ctx, confirmedTLSRegistries, opts)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -97,8 +100,10 @@ func getImageData(dockerCli command.Cli, namedRef reference.Named, transactionID
 			continue
 		}
 
-		// TODO: better variable name for fetchOnly
 		// TODO: handle case where there is more than 1 foundImages
+		// TODO: Instead of a boolean fetchOnly pass in a localStore struct
+		//  (the one that should be created from storeManifest and
+		// getLocalImageManifestData). If the object != nil, then store
 		if !fetchOnly {
 			if err := storeManifest(foundImages[0], namedRef, transactionID); err != nil {
 				logrus.Debugf("error storing manifest %s: %s", namedRef, err)
@@ -109,10 +114,8 @@ func getImageData(dockerCli command.Cli, namedRef reference.Named, transactionID
 	return nil, nil, fmt.Errorf("no endpoints found for %s", namedRef)
 }
 
-// TODO: needs to be extracted to NewManifestFetcher
 func fetchFromEndpoint(
 	ctx context.Context,
-	dockerCli command.Cli,
 	confirmedTLSRegistries map[string]bool,
 	opts fetcher.FetchOptions,
 ) ([]fetcher.ImgManifestInspect, error) {
@@ -131,7 +134,7 @@ func fetchFromEndpoint(
 
 	logrus.Debugf("Trying to fetch image manifest of %s repository from %s %s", opts.NamedRef, endpoint.URL, endpoint.Version)
 
-	foundImages, err := fetcher.Fetch(ctx, dockerCli, opts)
+	foundImages, err := fetcher.Fetch(ctx, opts)
 	if err != nil {
 		// Can a manifest fetch be cancelled? I don't think so...
 		if _, ok := err.(fetcher.RecoverableError); ok {
@@ -190,7 +193,7 @@ func loadManifestList(transaction string) (foundImages []fetcher.ImgManifestInsp
 
 // TODO: some of this should be abstracted out to a struct responsible for
 // managing the local manifests
-func storeManifest(image fetcher.ImgManifestInspect, namedRef reference.Named, transactionID string) error {
+func storeManifest(image fetcher.ImgManifestInspect, namedRef reference.Reference, transactionID string) error {
 	if transactionID == "" {
 		transactionID = namedRef.String()
 	}

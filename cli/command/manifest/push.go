@@ -202,7 +202,8 @@ func doListPush(ctx context.Context, dockerCli command.Cli, listPush manifestLis
 	}
 	putRequest.Header.Set("Content-Type", mediaType)
 
-	tr, err := fetcher.GetDistClientTransport(ctx, dockerCli, listPush.targetRepoInfo, listPush.targetEndpoint, listPush.targetName)
+	authConfig := command.ResolveAuthConfig(ctx, dockerCli, listPush.targetRepoInfo.Index)
+	tr, err := fetcher.GetDistClientTransport(authConfig, listPush.targetEndpoint, listPush.targetName)
 	if err != nil {
 		return errors.Wrap(err, "failed to setup HTTP client to repository")
 	}
