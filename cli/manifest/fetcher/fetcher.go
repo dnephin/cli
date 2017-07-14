@@ -7,11 +7,7 @@ import (
 	"runtime"
 	"time"
 
-	"golang.org/x/net/context"
-
 	"github.com/Sirupsen/logrus"
-	"github.com/pkg/errors"
-
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/distribution"
 	"github.com/docker/distribution/manifest/manifestlist"
@@ -22,19 +18,16 @@ import (
 	"github.com/docker/distribution/registry/client"
 	"github.com/docker/distribution/registry/client/auth"
 	"github.com/docker/distribution/registry/client/transport"
-	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/dockerversion"
 	"github.com/docker/docker/registry"
 	digest "github.com/opencontainers/go-digest"
+	"github.com/pkg/errors"
+	"golang.org/x/net/context"
 )
 
-// ManifestFetcher is to retrieve manifest and image info for an image or manifest list
-type ManifestFetcher struct {
-	endpoint   registry.APIEndpoint
-	repoInfo   *registry.RepositoryInfo
-	repo       distribution.Repository
-	authConfig types.AuthConfig
-	service    registry.Service
+// manifestFetcher is to retrieve manifest and image info for an image or manifest list
+type manifestFetcher struct {
+	repo distribution.Repository
 }
 
 type manifestInfo struct {
@@ -52,33 +45,38 @@ type manifestListInspect struct {
 	mediaTypes []string
 }
 
-// NewManifestFetcher builds a ManifestFetcher for use with a specific registry
-func NewManifestFetcher(endpoint registry.APIEndpoint, repoInfo *registry.RepositoryInfo, authConfig types.AuthConfig, registryService registry.Service) (ManifestFetcher, error) {
+func validateEndpoint(endpoint registry.APIEndpoint) error {
 	switch endpoint.Version {
 	case registry.APIVersion2:
-		return ManifestFetcher{
-			endpoint: endpoint, authConfig: authConfig,
-			service:  registryService,
-			repoInfo: repoInfo,
-		}, nil
+		return nil
 	case registry.APIVersion1:
-		return ManifestFetcher{}, fmt.Errorf("v1 registries are no longer supported")
+		return fmt.Errorf("v1 registries are no longer supported")
 	}
-	return ManifestFetcher{}, fmt.Errorf("unknown version %d for registry %s", endpoint.Version, endpoint.URL)
+	return fmt.Errorf("unknown version %d for registry %s", endpoint.Version, endpoint.URL)
 }
 
-// Fetch gets the summarized information for an image or manifest list
-func (mf *ManifestFetcher) Fetch(ctx context.Context, dockerCli command.Cli, ref reference.Named) ([]ImgManifestInspect, error) {
-	// Pre-condition: ref has to be tagged (e.g. using ParseNormalizedNamed)
-	var err error
+// FetchOptions are the options required to fetch a image data from a registry
+type FetchOptions struct {
+	RepoInfo *registry.RepositoryInfo
+	Endpoint registry.APIEndpoint
+	NamedRef reference.Named
+}
 
-	mf.repo, err = newV2Repository(ctx, dockerCli, mf.repoInfo, mf.endpoint)
+// TODO: remove dockerCli arg
+// Fetch and return summarized image information or a manifest list
+func Fetch(ctx context.Context, dockerCli command.Cli, opts FetchOptions) ([]ImgManifestInspect, error) {
+	if err := validateEndpoint(opts.Endpoint); err != nil {
+		return nil, err
+	}
+
+	mf, err := newV2Repository(ctx, dockerCli, opts.RepoInfo, opts.Endpoint)
 	if err != nil {
 		logrus.Debugf("Error getting v2 registry: %v", err)
 		return nil, err
 	}
 
-	images, err := mf.fetchWithRepository(ctx, ref)
+	// Pre-condition: namedRef has to be tagged (e.g. using ParseNormalizedNamed)
+	images, err := mf.fetchWithRepository(ctx, opts.NamedRef)
 	if err != nil {
 		if continueOnError(err) {
 			return nil, RecoverableError{original: err}
@@ -91,7 +89,7 @@ func (mf *ManifestFetcher) Fetch(ctx context.Context, dockerCli command.Cli, ref
 	return images, err
 }
 
-func (mf *ManifestFetcher) fetchWithRepository(ctx context.Context, ref reference.Named) ([]ImgManifestInspect, error) {
+func (mf *manifestFetcher) fetchWithRepository(ctx context.Context, ref reference.Named) ([]ImgManifestInspect, error) {
 	var (
 		manifest    distribution.Manifest
 		tagOrDigest string // Used for logging/progress only
@@ -164,7 +162,7 @@ func (mf *ManifestFetcher) fetchWithRepository(ctx context.Context, ref referenc
 	return imageList, nil
 }
 
-func (mf *ManifestFetcher) pullSchema2(ctx context.Context, ref reference.Named, mfst schema2.DeserializedManifest) (*Image, manifestInfo, error) {
+func (mf *manifestFetcher) pullSchema2(ctx context.Context, ref reference.Named, mfst schema2.DeserializedManifest) (*Image, manifestInfo, error) {
 	var (
 		img *Image
 	)
@@ -216,7 +214,7 @@ func (mf *ManifestFetcher) pullSchema2(ctx context.Context, ref reference.Named,
 	return img, mfInfo, nil
 }
 
-func (mf *ManifestFetcher) pullSchema2ImageConfig(ctx context.Context, dgst digest.Digest) ([]byte, error) {
+func (mf *manifestFetcher) pullSchema2ImageConfig(ctx context.Context, dgst digest.Digest) ([]byte, error) {
 	blobs := mf.repo.Blobs(ctx)
 	configJSON, err := blobs.Get(ctx, dgst)
 	if err != nil {
@@ -268,7 +266,7 @@ func schema2ManifestDigest(ref reference.Named, mfst distribution.Manifest) (dig
 
 // pullManifestList handles "manifest lists" which point to various
 // platform-specifc manifests.
-func (mf *ManifestFetcher) pullManifestList(ctx context.Context, ref reference.Named, mfstList manifestlist.DeserializedManifestList) (*manifestListInspect, error) {
+func (mf *manifestFetcher) pullManifestList(ctx context.Context, ref reference.Named, mfstList manifestlist.DeserializedManifestList) (*manifestListInspect, error) {
 	var (
 		imageList = []*Image{}
 		mfInfos   = []manifestInfo{}
@@ -317,7 +315,7 @@ func (mf *ManifestFetcher) pullManifestList(ctx context.Context, ref reference.N
 	return &manifestListInspect{imageInfos: imageList, mfInfos: mfInfos, mediaTypes: mediaType}, err
 }
 
-func newV2Repository(ctx context.Context, dockerCli command.Cli, repoInfo *registry.RepositoryInfo, endpoint registry.APIEndpoint) (distribution.Repository, error) {
+func newV2Repository(ctx context.Context, dockerCli command.Cli, repoInfo *registry.RepositoryInfo, endpoint registry.APIEndpoint) (*manifestFetcher, error) {
 	repoName := repoInfo.Name.Name()
 	// If endpoint does not support CanonicalName, use the RemoteName instead
 	if endpoint.TrimHostname {
@@ -336,9 +334,10 @@ func newV2Repository(ctx context.Context, dockerCli command.Cli, repoInfo *regis
 	if err != nil {
 		return nil, err
 	}
-	return repo, nil
+	return &manifestFetcher{repo: repo}, nil
 }
 
+// TODO: this should accept authConfig, not 3 extra args
 // GetDistClientTransport builds a transport for use in communicating with a registry
 func GetDistClientTransport(ctx context.Context, dockerCli command.Cli, repoInfo *registry.RepositoryInfo, endpoint registry.APIEndpoint, repoName string) (http.RoundTripper, error) {
 	// get the http transport, this will be used in a client to upload manifest
