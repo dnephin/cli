@@ -105,6 +105,15 @@ func getHTTPTransport(authConfig authtypes.AuthConfig, endpoint registry.APIEndp
 	return transport.NewTransport(base, modifiers...), nil
 }
 
+// RepoNameForReference returns the repository name from a reference
+func RepoNameForReference(ref reference.Named) (string, error) {
+	repo, err := newRepositoryWithDefaultEndpoint(ref)
+	if err != nil {
+		return "", err
+	}
+	return repo.Name(), nil
+}
+
 type existingTokenHandler struct {
 	token string
 }

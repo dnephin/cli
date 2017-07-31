@@ -120,7 +120,7 @@ func printManifestList(dockerCli command.Cli, namedRef reference.Named, list []t
 		manifests := []manifestlist.ManifestDescriptor{}
 		// More than one response. This is a manifest list.
 		for _, img := range list {
-			mfd, _, err := buildManifestDescriptor(targetRepo, img)
+			mfd, err := buildManifestDescriptor(targetRepo, img)
 			if err != nil {
 				return fmt.Errorf("error assembling ManifestDescriptor")
 			}
