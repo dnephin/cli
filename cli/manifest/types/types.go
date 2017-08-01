@@ -40,7 +40,13 @@ func (i ImageManifest) Layers() []digest.Digest {
 
 // Payload returns the media type and bytes for the manifest
 func (i ImageManifest) Payload() (string, []byte, error) {
-	return i.SchemaV2Manifest.Payload()
+	switch {
+	case i.SchemaV2Manifest != nil:
+		return i.SchemaV2Manifest.Payload()
+	default:
+		return "", nil, errors.Errorf("%s has no payload", i.Ref)
+	}
+
 }
 
 // NewImageManifest returns a new ImageManifest object. The values for Platform

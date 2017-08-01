@@ -132,7 +132,7 @@ func newNotFoundError(ref string) *notFoundError {
 }
 
 func (n *notFoundError) Error() string {
-	return fmt.Sprintf("%s does not exist", n.object)
+	return fmt.Sprintf("No such manifest: %s", n.object)
 }
 
 // NotFound interface

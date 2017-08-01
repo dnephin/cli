@@ -269,7 +269,7 @@ func (c *client) iterateEndpoints(ctx context.Context, namedRef reference.Named,
 			return nil
 		}
 	}
-	return nil
+	return newNotFoundError(namedRef.String())
 }
 
 // allEndpoints returns a list of endpoints ordered by priority (v2, https, v1).
@@ -294,4 +294,29 @@ func (c *client) newRepoOptionsForReference(ctx context.Context, namedRef refere
 		repoInfo:   repoInfo,
 		userAgent:  c.userAgent,
 	}, nil
+}
+
+type notFoundError struct {
+	object string
+}
+
+func newNotFoundError(ref string) *notFoundError {
+	return &notFoundError{object: ref}
+}
+
+func (n *notFoundError) Error() string {
+	return fmt.Sprintf("No such manifest: %s", n.object)
+}
+
+// NotFound interface
+func (n *notFoundError) NotFound() {}
+
+// IsNotFound returns true if the error is a not found error
+func IsNotFound(err error) bool {
+	_, ok := err.(notFound)
+	return ok
+}
+
+type notFound interface {
+	NotFound()
 }

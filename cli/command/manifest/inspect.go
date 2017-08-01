@@ -37,7 +37,7 @@ func newInspectCommand(dockerCli command.Cli) *cobra.Command {
 				opts.list = args[0]
 				opts.ref = args[1]
 			}
-			return runListInspect(dockerCli, opts)
+			return runInspect(dockerCli, opts)
 		},
 	}
 
@@ -46,7 +46,7 @@ func newInspectCommand(dockerCli command.Cli) *cobra.Command {
 	return cmd
 }
 
-func runListInspect(dockerCli command.Cli, opts inspectOptions) error {
+func runInspect(dockerCli command.Cli, opts inspectOptions) error {
 	namedRef, err := normalizeReference(opts.ref)
 	if err != nil {
 		return err

@@ -184,11 +184,6 @@ func (c *client) GetManifestList(ctx context.Context, ref reference.Named) ([]ma
 		return len(foundImages) > 0, err
 	}
 
-	if err := c.iterateEndpoints(ctx, ref, fetch); err != nil {
-		return nil, err
-	}
-	if len(result) == 0 {
-		return nil, errors.Errorf("no endpoints found for %s", ref)
-	}
-	return result, nil
+	err := c.iterateEndpoints(ctx, ref, fetch)
+	return result, err
 }

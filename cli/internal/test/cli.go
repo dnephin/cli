@@ -16,13 +16,15 @@ import (
 // FakeCli emulates the default DockerCli
 type FakeCli struct {
 	command.DockerCli
-	client     client.APIClient
-	configfile *configfile.ConfigFile
-	out        *command.OutStream
-	outBuffer  *bytes.Buffer
-	err        *bytes.Buffer
-	in         *command.InStream
-	server     command.ServerInfo
+	client         client.APIClient
+	configfile     *configfile.ConfigFile
+	out            *command.OutStream
+	outBuffer      *bytes.Buffer
+	err            *bytes.Buffer
+	in             *command.InStream
+	server         command.ServerInfo
+	manifestStore  manifeststore.Store
+	registryClient registryclient.RegistryClient
 }
 
 // NewFakeCliWithOutput returns a Cli backed by the fakeCli
@@ -104,12 +106,20 @@ func (c *FakeCli) ErrBuffer() *bytes.Buffer {
 
 // ManifestStore returns a fake store used for testing
 func (c *FakeCli) ManifestStore() manifeststore.Store {
-	// TODO: use a fake store when a test requires it
-	return nil
+	return c.manifestStore
 }
 
 // RegistryClient returns a fake client for testing
 func (c *FakeCli) RegistryClient() registryclient.RegistryClient {
-	// TODO: use a fake store when a test requires it
-	return nil
+	return c.registryClient
+}
+
+// SetManifestStore on the fake cli
+func (c *FakeCli) SetManifestStore(store manifeststore.Store) {
+	c.manifestStore = store
+}
+
+// SetRegistryClient on the fake cli
+func (c *FakeCli) SetRegistryClient(client registryclient.RegistryClient) {
+	c.registryClient = client
 }
