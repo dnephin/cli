@@ -2,8 +2,8 @@ package manifest
 
 import (
 	"fmt"
+	"io"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/manifest/types"
@@ -48,7 +48,7 @@ func newPushListCommand(dockerCli command.Cli) *cobra.Command {
 	}
 
 	flags := cmd.Flags()
-	flags.BoolVarP(&opts.purge, "purge", "p", true, "Remove the local manifest list after push")
+	flags.BoolVarP(&opts.purge, "purge", "p", false, "Remove the local manifest list after push")
 	return cmd
 }
 
@@ -222,7 +222,7 @@ func pushList(ctx context.Context, dockerCli command.Cli, req pushRequest) error
 		return err
 	}
 
-	if err := pushReferences(ctx, rclient, req.mountRequests); err != nil {
+	if err := pushReferences(ctx, dockerCli.Out(), rclient, req.mountRequests); err != nil {
 		return err
 	}
 
@@ -234,21 +234,21 @@ func pushList(ctx context.Context, dockerCli command.Cli, req pushRequest) error
 	return nil
 }
 
-func pushReferences(ctx context.Context, client registryclient.RegistryClient, mounts []mountRequest) error {
+func pushReferences(ctx context.Context, out io.Writer, client registryclient.RegistryClient, mounts []mountRequest) error {
 	for _, mount := range mounts {
 		newDigest, err := client.PutManifest(ctx, mount.ref, mount.options)
 		if err != nil {
 			return err
 		}
-		logrus.Infof("Pushed manifest %s with digest: %s", mount.ref, newDigest)
+		fmt.Fprintf(out, "Pushed manifest %s with digest: %s\n", mount.ref, newDigest)
 	}
 	return nil
 }
 
 func mountBlobs(ctx context.Context, client registryclient.RegistryClient, ref reference.Named, blobs []reference.Canonical) error {
 	for _, blob := range blobs {
-		if err := client.MountBlob(ctx, ref, blob); err != nil {
-			return errors.Wrapf(err, "failed to mount blob %s", blob)
+		if err := client.MountBlob(ctx, blob, ref); err != nil {
+			return err
 		}
 	}
 	return nil

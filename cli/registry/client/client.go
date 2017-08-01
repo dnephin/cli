@@ -2,9 +2,7 @@ package client
 
 import (
 	"bytes"
-	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/Sirupsen/logrus"
 	manifesttypes "github.com/docker/cli/cli/manifest/types"
@@ -24,7 +22,7 @@ import (
 type RegistryClient interface {
 	GetManifest(ctx context.Context, ref reference.Named) (manifesttypes.ImageManifest, error)
 	GetManifestList(ctx context.Context, ref reference.Named) ([]manifesttypes.ImageManifest, error)
-	MountBlob(ctx context.Context, source reference.Named, ref reference.Canonical) error
+	MountBlob(ctx context.Context, source reference.Canonical, target reference.Named) error
 	PutManifest(ctx context.Context, ref reference.Named, manifest PutManifestOptions) (digest.Digest, error)
 }
 
@@ -53,21 +51,21 @@ type client struct {
 var _ RegistryClient = &client{}
 
 // MountBlob into the registry, so it can be referenced by a manifest
-func (c *client) MountBlob(ctx context.Context, sourceRef reference.Named, targetRef reference.Canonical) error {
-	repo, err := c.getRepositoryForReference(ctx, sourceRef)
+func (c *client) MountBlob(ctx context.Context, sourceRef reference.Canonical, targetRef reference.Named) error {
+	repo, err := c.getRepositoryForReference(ctx, targetRef)
 	if err != nil {
 		return err
 	}
-	lu, err := repo.Blobs(ctx).Create(ctx, distributionclient.WithMountFrom(targetRef))
+	lu, err := repo.Blobs(ctx).Create(ctx, distributionclient.WithMountFrom(sourceRef))
 	if err != nil {
 		if _, ok := err.(distribution.ErrBlobMounted); !ok {
-			return errors.Wrapf(err, "failed to mount blob %s", targetRef)
+			return errors.Wrapf(err, "failed to mount blob %s to %s", sourceRef, targetRef)
 		}
 	}
 	// TODO: why is this cancelling the mount instead of commit?
 	// registry treated this as a normal upload
 	lu.Cancel(ctx)
-	logrus.Debugf("mount of blob %s succeeded", targetRef)
+	logrus.Debugf("mount of blob %s succeeded", sourceRef)
 	return nil
 }
 
@@ -85,13 +83,7 @@ func (c *client) PutManifest(ctx context.Context, ref reference.Named, manifest 
 		return dgst, errors.Wrap(err, "failed to setup HTTP client")
 	}
 
-	// TODO: this needs cleanup
-	targetRef, err := getRefWithoutDomain(ref)
-	if err != nil {
-		return dgst, err
-	}
-
-	pushURL, err := buildPutManifestURLFromReference(targetRef, repoEndpoint.BaseURL())
+	pushURL, err := buildPutManifestURLFromReference(ref, repoEndpoint)
 	if err != nil {
 		return dgst, err
 	}
@@ -104,6 +96,7 @@ func (c *client) PutManifest(ctx context.Context, ref reference.Named, manifest 
 
 	httpClient := &http.Client{Transport: httpTransport}
 	resp, err := httpClient.Do(putRequest)
+	logrus.Debugf("Resp: %s\n", resp)
 	if err != nil {
 		return dgst, err
 	}
@@ -117,16 +110,27 @@ func (c *client) PutManifest(ctx context.Context, ref reference.Named, manifest 
 	return dgst, errors.Wrap(err, "failed to parse returned digest")
 }
 
-func buildPutManifestURLFromReference(targetRef reference.Named, targetURL string) (string, error) {
-	urlBuilder, err := v2.NewURLBuilderFromString(targetURL, false)
+func buildPutManifestURLFromReference(targetRef reference.Named, repoEndpoint repositoryEndpoint) (string, error) {
+	urlBuilder, err := v2.NewURLBuilderFromString(repoEndpoint.BaseURL(), false)
 	if err != nil {
-		return "", errors.Wrapf(err, "can't create URL builder from endpoint (%s)", targetURL)
+		return "", errors.Wrapf(err, "can't create URL builder from endpoint (%s)", repoEndpoint.BaseURL())
 	}
-	manifestURL, err := urlBuilder.BuildManifestURL(targetRef)
+
+	repoName, err := reference.WithName(repoEndpoint.Name())
 	if err != nil {
-		return "", errors.Wrap(err, "failed to build manifest URL from target reference")
+		return "", errors.Wrapf(err, "failed to parse repo name from %s", targetRef)
 	}
-	return manifestURL, nil
+	namedTagged, ok := targetRef.(reference.NamedTagged)
+	if !ok {
+		return "", errors.Errorf("missing tag: %s", targetRef)
+	}
+	refWithoutDomain, err := reference.WithTag(repoName, namedTagged.Tag())
+	if err != nil {
+		return "", err
+	}
+
+	manifestURL, err := urlBuilder.BuildManifestURL(refWithoutDomain)
+	return manifestURL, errors.Wrap(err, "failed to build manifest URL from target reference")
 }
 
 func (c *client) getRepositoryForReference(ctx context.Context, ref reference.Named) (distribution.Repository, error) {
@@ -139,7 +143,11 @@ func (c *client) getRepositoryForReference(ctx context.Context, ref reference.Na
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to configure transport")
 	}
-	return distributionclient.NewRepository(ctx, ref, repoEndpoint.BaseURL(), httpTransport)
+	repoName, err := reference.WithName(repoEndpoint.Name())
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to parse repo name from %s", ref)
+	}
+	return distributionclient.NewRepository(ctx, repoName, repoEndpoint.BaseURL(), httpTransport)
 }
 
 func (c *client) getHTTPTransportForRepoEndpoint(ctx context.Context, repoEndpoint repositoryEndpoint) (http.RoundTripper, error) {
@@ -153,26 +161,6 @@ func (c *client) getHTTPTransportForRepoEndpoint(ctx context.Context, repoEndpoi
 
 func statusSuccess(status int) bool {
 	return status >= 200 && status <= 399
-}
-
-func getRefWithoutDomain(fullTargetRef reference.Named) (reference.Named, error) {
-	tagIndex := strings.LastIndex(fullTargetRef.String(), ":")
-	logrus.Debugf("fullTargetRef. should be complete by now: %s", fullTargetRef.String())
-	if tagIndex < 0 {
-		return nil, fmt.Errorf("malformed reference")
-	}
-	// TODO: there must be a more appropriate way to get the tag
-	tag := fullTargetRef.String()[tagIndex+1:]
-
-	targetRefNoTag, err := reference.WithName(reference.Path(fullTargetRef))
-	logrus.Debugf("targetRefNoTag should have no name and no tag: %s", targetRefNoTag.String())
-	if err != nil {
-		return nil, err
-	}
-	targetRefNoDomain, _ := reference.WithTag(targetRefNoTag, tag)
-	logrus.Debugf("targetRefNoDomain should have no domain but a tag? %s", targetRefNoDomain.String())
-
-	return targetRefNoDomain, nil
 }
 
 // GetManifest returns an ImageManifest for the reference

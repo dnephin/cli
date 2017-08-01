@@ -78,6 +78,6 @@ func createManifestList(dockerCli command.Cli, args []string, opts annotateOpts)
 			return err
 		}
 	}
-	fmt.Fprintf(dockerCli.Out(), "successfully started manifest list %s", targetRef.String())
+	fmt.Fprintf(dockerCli.Out(), "Created manifest list %s\n", targetRef.String())
 	return nil
 }
