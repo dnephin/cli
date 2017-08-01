@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"github.com/docker/cli/cli/command"
+	"github.com/docker/cli/cli/manifest/store"
 	"github.com/docker/cli/cli/manifest/types"
 	"github.com/docker/distribution/reference"
 	"golang.org/x/net/context"
@@ -68,10 +69,11 @@ func normalizeReference(ref string) (reference.Named, error) {
 func getManifest(ctx context.Context, dockerCli command.Cli, listRef, namedRef reference.Named) (types.ImageManifest, error) {
 	data, err := dockerCli.ManifestStore().Get(listRef, namedRef)
 	switch {
+	case store.IsNotFound(err):
+		return dockerCli.RegistryClient().GetManifest(ctx, namedRef)
 	case err != nil:
 		return types.ImageManifest{}, err
-	case data != nil:
-		return *data, nil
+	default:
+		return data, nil
 	}
-	return dockerCli.RegistryClient().GetManifest(ctx, namedRef)
 }

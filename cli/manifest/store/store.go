@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -15,7 +16,7 @@ import (
 // Store manages local storage of image distribution manifests
 type Store interface {
 	Remove(listRef reference.Reference) error
-	Get(listRef reference.Reference, manifest reference.Reference) (*types.ImageManifest, error)
+	Get(listRef reference.Reference, manifest reference.Reference) (types.ImageManifest, error)
 	GetList(listRef reference.Reference) ([]types.ImageManifest, error)
 	Save(listRef reference.Reference, manifest reference.Reference, image types.ImageManifest) error
 }
@@ -38,42 +39,41 @@ func (s *fsStore) Remove(listRef reference.Reference) error {
 }
 
 // Get returns the local manifest
-// TODO: can transaction be something more strict than string? (same for other methods)
-func (s *fsStore) Get(listRef reference.Reference, manifest reference.Reference) (*types.ImageManifest, error) {
+func (s *fsStore) Get(listRef reference.Reference, manifest reference.Reference) (types.ImageManifest, error) {
 	filename := manifestToFilename(s.root, listRef.String(), manifest.String())
-	return s.getFromFilename(filename)
+	return s.getFromFilename(manifest, filename)
 }
 
-func (s *fsStore) getFromFilename(filename string) (*types.ImageManifest, error) {
+func (s *fsStore) getFromFilename(ref reference.Reference, filename string) (types.ImageManifest, error) {
 	bytes, err := ioutil.ReadFile(filename)
 	switch {
 	case os.IsNotExist(err):
-		return nil, nil
+		return types.ImageManifest{}, newNotFoundError(ref.String())
 	case err != nil:
-		return nil, err
+		return types.ImageManifest{}, err
 	}
 	var manifestInfo types.ImageManifest
-	return &manifestInfo, json.Unmarshal(bytes, &manifestInfo)
+	return manifestInfo, json.Unmarshal(bytes, &manifestInfo)
 }
 
 // GetList returns all the local manifests for a transaction
 func (s *fsStore) GetList(listRef reference.Reference) ([]types.ImageManifest, error) {
 	filenames, err := s.listManifests(listRef.String())
-	if err != nil || filenames == nil {
+	switch {
+	case err != nil:
 		return nil, err
+	case filenames == nil:
+		return nil, newNotFoundError(listRef.String())
 	}
 
 	manifests := []types.ImageManifest{}
 	for _, filename := range filenames {
 		filename = filepath.Join(s.root, makeFilesafeName(listRef.String()), filename)
-		manifest, err := s.getFromFilename(filename)
+		manifest, err := s.getFromFilename(listRef, filename)
 		if err != nil {
 			return nil, err
 		}
-		if manifest == nil {
-			continue
-		}
-		manifests = append(manifests, *manifest)
+		manifests = append(manifests, manifest)
 	}
 	return manifests, nil
 }
@@ -121,4 +121,29 @@ func manifestToFilename(root, manifestList, manifest string) string {
 func makeFilesafeName(ref string) string {
 	fileName := strings.Replace(ref, ":", "-", -1)
 	return strings.Replace(fileName, "/", "_", -1)
+}
+
+type notFoundError struct {
+	object string
+}
+
+func newNotFoundError(ref string) *notFoundError {
+	return &notFoundError{object: ref}
+}
+
+func (n *notFoundError) Error() string {
+	return fmt.Sprintf("%s does not exist", n.object)
+}
+
+// NotFound interface
+func (n *notFoundError) NotFound() {}
+
+// IsNotFound returns true if the error is a not found error
+func IsNotFound(err error) bool {
+	_, ok := err.(notFound)
+	return ok
+}
+
+type notFound interface {
+	NotFound()
 }

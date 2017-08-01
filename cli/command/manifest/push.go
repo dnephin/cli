@@ -48,7 +48,7 @@ func newPushListCommand(dockerCli command.Cli) *cobra.Command {
 	}
 
 	flags := cmd.Flags()
-	flags.BoolVarP(&opts.purge, "purge", "p", true, "After pushing, delete the user's locally-stored manifest list info")
+	flags.BoolVarP(&opts.purge, "purge", "p", true, "Remove the local manifest list after push")
 	return cmd
 }
 

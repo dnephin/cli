@@ -4,6 +4,7 @@ import (
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
+	"github.com/docker/cli/cli/manifest/store"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"golang.org/x/net/context"
@@ -23,7 +24,7 @@ func newAnnotateCommand(dockerCli command.Cli) *cobra.Command {
 	var opts annotateOptions
 
 	cmd := &cobra.Command{
-		Use:   "annotate NAME[:TAG] [OPTIONS]",
+		Use:   "annotate [OPTIONS] MANIFEST_LIST MANIFEST",
 		Short: "Add additional information to a local image manifest",
 		Args:  cli.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -35,10 +36,10 @@ func newAnnotateCommand(dockerCli command.Cli) *cobra.Command {
 
 	flags := cmd.Flags()
 
-	flags.StringVar(&opts.os, "os", "", "Add os info to a manifest before pushing it.")
-	flags.StringVar(&opts.arch, "arch", "", "Add arch info to a manifest before pushing it.")
-	flags.StringSliceVar(&opts.osFeatures, "os-features", []string{}, "Add feature info to a manifest before pushing it.")
-	flags.StringVar(&opts.variant, "variant", "", "Add arch variant to a manifest before pushing it.")
+	flags.StringVar(&opts.os, "os", "", "Set operating system")
+	flags.StringVar(&opts.arch, "arch", "", "Set architecture")
+	flags.StringSliceVar(&opts.osFeatures, "os-features", []string{}, "Set operating system feature")
+	flags.StringVar(&opts.variant, "variant", "", "Set architecture variant")
 
 	return cmd
 }
@@ -59,17 +60,16 @@ func runManifestAnnotate(dockerCli command.Cli, opts annotateOptions) error {
 	manifestStore := dockerCli.ManifestStore()
 	imageManfiest, err := manifestStore.Get(targetRef, imgRef)
 	switch {
-	case err != nil:
-		return err
-	case imageManfiest == nil:
-		remoteManifest, err := getManifest(ctx, dockerCli, targetRef, imgRef)
+	case store.IsNotFound(err):
+		imageManfiest, err = getManifest(ctx, dockerCli, targetRef, imgRef)
 		if err != nil {
 			return err
 		}
-		if err := manifestStore.Save(targetRef, imgRef, remoteManifest); err != nil {
+		if err := manifestStore.Save(targetRef, imgRef, imageManfiest); err != nil {
 			return err
 		}
-		imageManfiest = &remoteManifest
+	case err != nil:
+		return err
 	}
 
 	// Update the mf
@@ -89,7 +89,7 @@ func runManifestAnnotate(dockerCli command.Cli, opts annotateOptions) error {
 	if !isValidOSArch(imageManfiest.Platform.OS, imageManfiest.Platform.Architecture) {
 		return errors.Errorf("manifest entry for image has unsupported os/arch combination: %s/%s", opts.os, opts.arch)
 	}
-	return manifestStore.Save(targetRef, imgRef, *imageManfiest)
+	return manifestStore.Save(targetRef, imgRef, imageManfiest)
 }
 
 func appendIfUnique(list []string, str string) []string {

@@ -6,6 +6,7 @@ import (
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
+	"github.com/docker/cli/cli/manifest/store"
 	"github.com/docker/docker/registry"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
@@ -20,7 +21,7 @@ func newCreateListCommand(dockerCli command.Cli) *cobra.Command {
 	opts := annotateOpts{}
 
 	cmd := &cobra.Command{
-		Use:   "create newRef manifest [manifest...]",
+		Use:   "create MANFEST_LIST MANIFEST [MANIFEST...]",
 		Short: "Create a local manifest list for annotating and pushing to a registry",
 		Args:  cli.RequiresMinArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -29,7 +30,7 @@ func newCreateListCommand(dockerCli command.Cli) *cobra.Command {
 	}
 
 	flags := cmd.Flags()
-	flags.BoolVarP(&opts.amend, "amend", "a", false, "Amend an existing manifest list transaction")
+	flags.BoolVarP(&opts.amend, "amend", "a", false, "Amend an existing manifest list")
 	return cmd
 }
 
@@ -47,12 +48,14 @@ func createManifestList(dockerCli command.Cli, args []string, opts annotateOpts)
 	}
 
 	manifestStore := dockerCli.ManifestStore()
-	list, err := manifestStore.GetList(targetRef)
-	if err != nil {
+	_, err = manifestStore.GetList(targetRef)
+	switch {
+	case store.IsNotFound(err):
+		// New manifest list
+	case err != nil:
 		return err
-	}
-	if len(list) > 0 && !opts.amend {
-		return fmt.Errorf("refusing to continue over an existing manifest list transaction with no --amend flag")
+	case !opts.amend:
+		return errors.Errorf("refusing to ammend an existing manifest list with no --amend flag")
 	}
 
 	ctx := context.Background()
@@ -75,6 +78,6 @@ func createManifestList(dockerCli command.Cli, args []string, opts annotateOpts)
 			return err
 		}
 	}
-	logrus.Infof("successfully started manifest list transaction for %s", targetRef.String())
+	fmt.Fprintf(dockerCli.Out(), "successfully started manifest list %s", targetRef.String())
 	return nil
 }

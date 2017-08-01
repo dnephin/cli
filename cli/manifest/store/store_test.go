@@ -65,30 +65,39 @@ func TestStoreSaveAndGet(t *testing.T) {
 
 	listRef := ref("list")
 	data := types.ImageManifest{Ref: sref(t, "abcdef")}
-	require.NoError(t, store.Save(listRef, ref("exists"), data))
+	err := store.Save(listRef, ref("exists"), data)
+	require.NoError(t, err)
 
 	var testcases = []struct {
 		listRef     reference.Reference
 		manifestRef reference.Reference
-		expected    *types.ImageManifest
+		expected    types.ImageManifest
+		expectedErr string
 	}{
 		{
 			listRef:     listRef,
 			manifestRef: ref("exists"),
-			expected:    &data,
+			expected:    data,
 		},
 		{
 			listRef:     listRef,
-			manifestRef: ref("does-not-exist"),
+			manifestRef: ref("exist:does-not"),
+			expectedErr: "exist:does-not does not exist",
 		},
 		{
-			listRef:     ref("list-does-not-exist"),
-			manifestRef: ref("does-not-exist"),
+			listRef:     ref("list:does-not-exist"),
+			manifestRef: ref("manifest:does-not-exist"),
+			expectedErr: "manifest:does-not-exist does not exist",
 		},
 	}
 
 	for _, testcase := range testcases {
 		actual, err := store.Get(testcase.listRef, testcase.manifestRef)
+		if testcase.expectedErr != "" {
+			assert.EqualError(t, err, testcase.expectedErr)
+			assert.True(t, IsNotFound(err))
+			continue
+		}
 		if !assert.NoError(t, err, testcase.manifestRef.String()) {
 			continue
 		}
@@ -109,4 +118,14 @@ func TestStoreGetList(t *testing.T) {
 	list, err := store.GetList(listRef)
 	require.NoError(t, err)
 	assert.Len(t, list, 2)
+}
+
+func TestStoreGetListDoesNotExist(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	listRef := ref("list")
+	_, err := store.GetList(listRef)
+	assert.EqualError(t, err, "list does not exist")
+	assert.True(t, IsNotFound(err))
 }

@@ -37,7 +37,6 @@ func newInspectCommand(dockerCli command.Cli) *cobra.Command {
 				opts.list = args[0]
 				opts.ref = args[1]
 			}
-			opts.ref = args[0]
 			return runListInspect(dockerCli, opts)
 		},
 	}
@@ -53,7 +52,7 @@ func runListInspect(dockerCli command.Cli, opts inspectOptions) error {
 		return err
 	}
 
-	// If list is set display the local manifest in a list
+	// If list reference is provided display the local manifest in a list
 	if opts.list != "" {
 		listRef, err := normalizeReference(opts.list)
 		if err != nil {
@@ -64,7 +63,7 @@ func runListInspect(dockerCli command.Cli, opts inspectOptions) error {
 		if err != nil {
 			return err
 		}
-		return printManifest(dockerCli, *imageManifest, opts)
+		return printManifest(dockerCli, imageManifest, opts)
 	}
 
 	// Try a local manifest list first
