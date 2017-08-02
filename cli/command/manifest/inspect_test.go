@@ -13,6 +13,7 @@ import (
 	"github.com/docker/distribution/manifest/schema2"
 	"github.com/docker/distribution/reference"
 	"github.com/docker/docker/pkg/testutil/golden"
+	"github.com/opencontainers/go-digest"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -50,7 +51,7 @@ func fullImageManifest(t *testing.T, ref reference.Named) types.ImageManifest {
 	})
 	require.NoError(t, err)
 	// TODO: incldue image data for verbose inspect
-	return types.NewImageManifest(ref, types.Image{}, man)
+	return types.NewImageManifest(ref, digest.Digest("abcd"), types.Image{}, man)
 }
 
 func TestInspectCommandLocalManifestNotFound(t *testing.T) {

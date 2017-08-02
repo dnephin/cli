@@ -544,8 +544,10 @@ func (ms *manifests) Put(ctx context.Context, m distribution.Manifest, options .
 	}
 
 	putRequest.Header.Set("Content-Type", mediaType)
+	fmt.Printf("PUT REQUEST: %s\n", putRequest)
 
 	resp, err := ms.client.Do(putRequest)
+	fmt.Printf("PUT Response: %s\n", resp)
 	if err != nil {
 		return "", err
 	}

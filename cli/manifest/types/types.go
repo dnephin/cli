@@ -16,6 +16,7 @@ import (
 // ImageManifest contains info to output for a manifest object.
 type ImageManifest struct {
 	Ref              *SerializableNamed
+	Digest           digest.Digest
 	Image            Image
 	SchemaV2Manifest *schema2.DeserializedManifest `json:",omitempty"`
 	Platform         manifestlist.PlatformSpec
@@ -60,7 +61,7 @@ func (i ImageManifest) References() []distribution.Descriptor {
 
 // NewImageManifest returns a new ImageManifest object. The values for Platform
 // are initialized from those in the image
-func NewImageManifest(ref reference.Named, img Image, manifest *schema2.DeserializedManifest) ImageManifest {
+func NewImageManifest(ref reference.Named, digest digest.Digest, img Image, manifest *schema2.DeserializedManifest) ImageManifest {
 	platform := manifestlist.PlatformSpec{
 		OS:           img.OS,
 		Architecture: img.Architecture,
@@ -69,6 +70,7 @@ func NewImageManifest(ref reference.Named, img Image, manifest *schema2.Deserial
 	}
 	return ImageManifest{
 		Ref:              &SerializableNamed{Named: ref},
+		Digest:           digest,
 		Image:            img,
 		SchemaV2Manifest: manifest,
 		Platform:         platform,

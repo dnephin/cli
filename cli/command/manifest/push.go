@@ -117,7 +117,7 @@ func buildPushRequest(manifests []types.ImageManifest, targetRef reference.Named
 		}
 		req.manfiestBlobs = append(req.manfiestBlobs, blobs...)
 
-		manifestPush, err := buildMountRequest(imageManifest, targetRef)
+		manifestPush, err := buildPutManifestRequest(imageManifest, targetRef)
 		if err != nil {
 			return req, err
 		}
@@ -192,24 +192,15 @@ func buildBlobRequestList(imageManifest types.ImageManifest, targetRepoName refe
 	return blobReferences, nil
 }
 
-func buildMountRequest(imageManifest types.ImageManifest, targetRef reference.Named) (mountRequest, error) {
-	_, raw, err := imageManifest.Payload()
-	if err != nil {
-		return mountRequest{}, err
-	}
-
-	// TODO: this needs to be without a tag
-	// TODO: this is not the correct digest
-	mountRef, err := reference.WithDigest(targetRef, digest.FromBytes(raw))
+func buildPutManifestRequest(imageManifest types.ImageManifest, targetRef reference.Named) (mountRequest, error) {
+	refWithoutTag, _ := reference.WithName(targetRef.Name())
+	mountRef, err := reference.WithDigest(refWithoutTag, imageManifest.Digest)
 	if err != nil {
 		return mountRequest{}, err
 	}
 	fmt.Printf("MountRef: %s\n", mountRef)
 
-	return mountRequest{
-		ref:      mountRef,
-		manifest: imageManifest,
-	}, nil
+	return mountRequest{ref: mountRef, manifest: imageManifest}, nil
 }
 
 func pushList(ctx context.Context, dockerCli command.Cli, req pushRequest) error {

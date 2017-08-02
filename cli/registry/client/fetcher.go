@@ -71,7 +71,8 @@ func getManifest(ctx context.Context, repo distribution.Repository, ref referenc
 }
 
 func pullManifestSchemaV2(ctx context.Context, ref reference.Named, repo distribution.Repository, mfst schema2.DeserializedManifest) (types.ImageManifest, error) {
-	if err := validateManifestDigest(ref, mfst); err != nil {
+	manifestDigest, err := validateManifestDigest(ref, mfst)
+	if err != nil {
 		return types.ImageManifest{}, err
 	}
 
@@ -90,7 +91,7 @@ func pullManifestSchemaV2(ctx context.Context, ref reference.Named, repo distrib
 		}
 	}
 
-	return types.NewImageManifest(ref, *img, &mfst), nil
+	return types.NewImageManifest(ref, manifestDigest, *img, &mfst), nil
 }
 
 func pullManifestSchemaV2ImageConfig(ctx context.Context, dgst digest.Digest, repo distribution.Repository) ([]byte, error) {
@@ -115,29 +116,29 @@ func pullManifestSchemaV2ImageConfig(ctx context.Context, dgst digest.Digest, re
 
 // validateManifestDigest computes the manifest digest, and, if pulling by
 // digest, ensures that it matches the requested digest.
-func validateManifestDigest(ref reference.Named, mfst distribution.Manifest) error {
+func validateManifestDigest(ref reference.Named, mfst distribution.Manifest) (digest.Digest, error) {
 	_, canonical, err := mfst.Payload()
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// If pull by digest, then verify the manifest digest.
 	if digested, isDigested := ref.(reference.Canonical); isDigested {
 		verifier := digested.Digest().Verifier()
 		if err != nil {
-			return err
+			return "", err
 		}
 		if _, err := verifier.Write(canonical); err != nil {
-			return err
+			return "", err
 		}
 		if !verifier.Verified() {
 			err := fmt.Errorf("manifest verification failed for digest %s", digested.Digest())
-			return err
+			return "", err
 		}
-		return nil
+		return digested.Digest(), nil
 	}
 
-	return nil
+	return digest.FromBytes(canonical), nil
 }
 
 // pullManifestList handles "manifest lists" which point to various
@@ -145,7 +146,7 @@ func validateManifestDigest(ref reference.Named, mfst distribution.Manifest) err
 func pullManifestList(ctx context.Context, ref reference.Named, repo distribution.Repository, mfstList manifestlist.DeserializedManifestList) ([]types.ImageManifest, error) {
 	infos := []types.ImageManifest{}
 
-	if err := validateManifestDigest(ref, mfstList); err != nil {
+	if _, err := validateManifestDigest(ref, mfstList); err != nil {
 		return nil, err
 	}
 
