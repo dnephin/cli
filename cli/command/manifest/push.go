@@ -23,13 +23,13 @@ type pushOpts struct {
 }
 
 type mountRequest struct {
-	ref     reference.Named
-	options registryclient.PutManifestOptions
+	ref      reference.Named
+	manifest types.ImageManifest
 }
 
 type pushRequest struct {
 	targetRef     reference.Named
-	list          registryclient.PutManifestOptions
+	list          *manifestlist.DeserializedManifestList
 	mountRequests []mountRequest
 	manfiestBlobs []reference.Canonical
 }
@@ -84,12 +84,8 @@ func runPush(dockerCli command.Cli, opts pushOpts) error {
 func buildPushRequest(manifests []types.ImageManifest, targetRef reference.Named) (pushRequest, error) {
 	req := pushRequest{targetRef: targetRef}
 
-	list, err := buildManifestList(manifests, targetRef)
-	if err != nil {
-		return req, err
-	}
-
-	req.list, err = buildPutManifestOptionsFromManifestList(list)
+	var err error
+	req.list, err = buildManifestList(manifests, targetRef)
 	if err != nil {
 		return req, err
 	}
@@ -130,25 +126,26 @@ func buildPushRequest(manifests []types.ImageManifest, targetRef reference.Named
 	return req, nil
 }
 
-func buildManifestList(manifests []types.ImageManifest, targetRef reference.Named) (manifestlist.ManifestList, error) {
+func buildManifestList(manifests []types.ImageManifest, targetRef reference.Named) (*manifestlist.DeserializedManifestList, error) {
 	targetRepoInfo, err := registry.ParseRepositoryInfo(targetRef)
 	if err != nil {
-		return manifestlist.ManifestList{}, err
+		return nil, err
 	}
 
-	list := manifestlist.ManifestList{Versioned: manifestlist.SchemaVersion}
+	descriptors := []manifestlist.ManifestDescriptor{}
 	for _, imageManifest := range manifests {
 		if imageManifest.Platform.Architecture == "" || imageManifest.Platform.OS == "" {
-			return list, errors.Errorf(
+			return nil, errors.Errorf(
 				"manifest %s must have an OS and Architecture to be pushed to a registry", imageManifest.Ref)
 		}
 		descriptor, err := buildManifestDescriptor(targetRepoInfo, imageManifest)
 		if err != nil {
-			return list, err
+			return nil, err
 		}
-		list.Manifests = append(list.Manifests, descriptor)
+		descriptors = append(descriptors, descriptor)
 	}
-	return list, nil
+
+	return manifestlist.FromDescriptors(descriptors)
 }
 
 func buildManifestDescriptor(targetRepo *registry.RepositoryInfo, imageManifest types.ImageManifest) (manifestlist.ManifestDescriptor, error) {
@@ -196,22 +193,22 @@ func buildBlobRequestList(imageManifest types.ImageManifest, targetRepoName refe
 }
 
 func buildMountRequest(imageManifest types.ImageManifest, targetRef reference.Named) (mountRequest, error) {
-	mediatype, raw, err := imageManifest.Payload()
+	_, raw, err := imageManifest.Payload()
 	if err != nil {
 		return mountRequest{}, err
 	}
 
+	// TODO: this needs to be without a tag
+	// TODO: this is not the correct digest
 	mountRef, err := reference.WithDigest(targetRef, digest.FromBytes(raw))
 	if err != nil {
 		return mountRequest{}, err
 	}
+	fmt.Printf("MountRef: %s\n", mountRef)
 
 	return mountRequest{
-		ref: mountRef,
-		options: registryclient.PutManifestOptions{
-			MediaType: mediatype,
-			Payload:   raw,
-		},
+		ref:      mountRef,
+		manifest: imageManifest,
 	}, nil
 }
 
@@ -236,7 +233,7 @@ func pushList(ctx context.Context, dockerCli command.Cli, req pushRequest) error
 
 func pushReferences(ctx context.Context, out io.Writer, client registryclient.RegistryClient, mounts []mountRequest) error {
 	for _, mount := range mounts {
-		newDigest, err := client.PutManifest(ctx, mount.ref, mount.options)
+		newDigest, err := client.PutManifest(ctx, mount.ref, mount.manifest)
 		if err != nil {
 			return err
 		}
@@ -252,16 +249,4 @@ func mountBlobs(ctx context.Context, client registryclient.RegistryClient, ref r
 		}
 	}
 	return nil
-}
-
-func buildPutManifestOptionsFromManifestList(list manifestlist.ManifestList) (registryclient.PutManifestOptions, error) {
-	deserializedManifestList, err := manifestlist.FromDescriptors(list.Manifests)
-	if err != nil {
-		return registryclient.PutManifestOptions{}, errors.Wrap(err, "failed to deserialize manifest list")
-	}
-	mediaType, rawBytes, _ := deserializedManifestList.Payload()
-	return registryclient.PutManifestOptions{
-		MediaType: mediaType,
-		Payload:   rawBytes,
-	}, nil
 }

@@ -1,14 +1,12 @@
 package client
 
 import (
-	"bytes"
 	"net/http"
 
 	"github.com/Sirupsen/logrus"
 	manifesttypes "github.com/docker/cli/cli/manifest/types"
 	"github.com/docker/distribution"
 	"github.com/docker/distribution/reference"
-	"github.com/docker/distribution/registry/api/v2"
 	distributionclient "github.com/docker/distribution/registry/client"
 	"github.com/docker/docker/api/types"
 	registrytypes "github.com/docker/docker/api/types/registry"
@@ -23,7 +21,7 @@ type RegistryClient interface {
 	GetManifest(ctx context.Context, ref reference.Named) (manifesttypes.ImageManifest, error)
 	GetManifestList(ctx context.Context, ref reference.Named) ([]manifesttypes.ImageManifest, error)
 	MountBlob(ctx context.Context, source reference.Canonical, target reference.Named) error
-	PutManifest(ctx context.Context, ref reference.Named, manifest PutManifestOptions) (digest.Digest, error)
+	PutManifest(ctx context.Context, ref reference.Named, manifest distribution.Manifest) (digest.Digest, error)
 }
 
 // NewRegistryClient returns a new RegistryClient with a resolver
@@ -74,67 +72,30 @@ func (c *client) MountBlob(ctx context.Context, sourceRef reference.Canonical, t
 }
 
 // PutManifestList sends the manifest to a registry and returns the new digest
-func (c *client) PutManifest(ctx context.Context, ref reference.Named, manifest PutManifestOptions) (digest.Digest, error) {
-	dgst := digest.Digest("")
+func (c *client) PutManifest(ctx context.Context, ref reference.Named, manifest distribution.Manifest) (digest.Digest, error) {
+	logrus.Debugf("PUT %s %s", ref, manifest)
 
 	repoEndpoint, err := newDefaultRepositoryEndpoint(ref)
 	if err != nil {
-		return dgst, err
+		return digest.Digest(""), err
 	}
 
-	httpTransport, err := c.getHTTPTransportForRepoEndpoint(ctx, repoEndpoint)
+	repo, err := c.getRepositoryForReference(ctx, ref, repoEndpoint)
 	if err != nil {
-		return dgst, errors.Wrap(err, "failed to setup HTTP client")
+		return digest.Digest(""), err
 	}
 
-	pushURL, err := buildPutManifestURLFromReference(ref, repoEndpoint)
+	manifestService, err := repo.Manifests(ctx)
 	if err != nil {
-		return dgst, err
+		return digest.Digest(""), err
 	}
 
-	putRequest, err := http.NewRequest("PUT", pushURL, bytes.NewReader(manifest.Payload))
+	_, opts, err := getManifestOptionsFromReference(ref)
 	if err != nil {
-		return dgst, err
+		return digest.Digest(""), err
 	}
-	putRequest.Header.Set("Content-Type", manifest.MediaType)
-
-	httpClient := &http.Client{Transport: httpTransport}
-	resp, err := httpClient.Do(putRequest)
-	logrus.Debugf("Resp: %s\n", resp)
-	if err != nil {
-		return dgst, err
-	}
-	defer resp.Body.Close()
-
-	if !statusSuccess(resp.StatusCode) {
-		return dgst, errors.Wrapf(err, "PutManifestList failed: %s", resp.Status)
-	}
-
-	dgst, err = digest.Parse(resp.Header.Get("Docker-Content-Digest"))
-	return dgst, errors.Wrap(err, "failed to parse returned digest")
-}
-
-func buildPutManifestURLFromReference(targetRef reference.Named, repoEndpoint repositoryEndpoint) (string, error) {
-	urlBuilder, err := v2.NewURLBuilderFromString(repoEndpoint.BaseURL(), false)
-	if err != nil {
-		return "", errors.Wrapf(err, "can't create URL builder from endpoint (%s)", repoEndpoint.BaseURL())
-	}
-
-	repoName, err := reference.WithName(repoEndpoint.Name())
-	if err != nil {
-		return "", errors.Wrapf(err, "failed to parse repo name from %s", targetRef)
-	}
-	namedTagged, ok := targetRef.(reference.NamedTagged)
-	if !ok {
-		return "", errors.Errorf("missing tag: %s", targetRef)
-	}
-	refWithoutDomain, err := reference.WithTag(repoName, namedTagged.Tag())
-	if err != nil {
-		return "", err
-	}
-
-	manifestURL, err := urlBuilder.BuildManifestURL(refWithoutDomain)
-	return manifestURL, errors.Wrap(err, "failed to build manifest URL from target reference")
+	dgst, err := manifestService.Put(ctx, manifest, opts...)
+	return dgst, errors.Wrapf(err, "failed to put manifest %s", ref)
 }
 
 func (c *client) getRepositoryForReference(ctx context.Context, ref reference.Named, repoEndpoint repositoryEndpoint) (distribution.Repository, error) {
@@ -156,10 +117,6 @@ func (c *client) getHTTPTransportForRepoEndpoint(ctx context.Context, repoEndpoi
 		repoEndpoint.Name(),
 		c.userAgent)
 	return httpTransport, errors.Wrap(err, "failed to configure transport")
-}
-
-func statusSuccess(status int) bool {
-	return status >= 200 && status <= 399
 }
 
 // GetManifest returns an ImageManifest for the reference
@@ -185,4 +142,15 @@ func (c *client) GetManifestList(ctx context.Context, ref reference.Named) ([]ma
 
 	err := c.iterateEndpoints(ctx, ref, fetch)
 	return result, err
+}
+
+func getManifestOptionsFromReference(ref reference.Named) (digest.Digest, []distribution.ManifestServiceOption, error) {
+	if tagged, isTagged := ref.(reference.NamedTagged); isTagged {
+		tag := tagged.Tag()
+		return "", []distribution.ManifestServiceOption{distribution.WithTag(tag)}, nil
+	}
+	if digested, isDigested := ref.(reference.Canonical); isDigested {
+		return digested.Digest(), []distribution.ManifestServiceOption{}, nil
+	}
+	return "", nil, errors.Errorf("%s no tag or digest", ref)
 }

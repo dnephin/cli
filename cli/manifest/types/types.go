@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/docker/distribution"
 	"github.com/docker/distribution/manifest/manifestlist"
 	"github.com/docker/distribution/manifest/schema2"
 	"github.com/docker/distribution/reference"
@@ -46,7 +47,15 @@ func (i ImageManifest) Payload() (string, []byte, error) {
 	default:
 		return "", nil, errors.Errorf("%s has no payload", i.Ref)
 	}
+}
 
+func (i ImageManifest) References() []distribution.Descriptor {
+	switch {
+	case i.SchemaV2Manifest != nil:
+		return i.SchemaV2Manifest.References()
+	default:
+		return nil
+	}
 }
 
 // NewImageManifest returns a new ImageManifest object. The values for Platform

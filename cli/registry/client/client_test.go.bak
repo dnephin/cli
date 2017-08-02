@@ -1,0 +1,84 @@
+package client
+
+import (
+	"fmt"
+	"testing"
+
+	"github.com/docker/distribution/reference"
+	"github.com/docker/docker/api/types"
+	registrytypes "github.com/docker/docker/api/types/registry"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// TODO: this helper is duplicated
+func normalizeReference(ref string) (reference.Named, error) {
+	namedRef, err := reference.ParseNormalizedNamed(ref)
+	if err != nil {
+		return nil, err
+	}
+	if _, isDigested := namedRef.(reference.Canonical); !isDigested {
+		return reference.TagNameOnly(namedRef), nil
+	}
+	return namedRef, nil
+}
+
+func parseRef(t *testing.T, ref string) reference.Named {
+	normalized, err := normalizeReference(ref)
+	require.NoError(t, err)
+	return normalized
+}
+
+func namedRef(t *testing.T, ref string) reference.Named {
+	parsed, err := reference.Parse(ref)
+	require.NoError(t, err)
+	named, ok := parsed.(reference.Named)
+	if !ok {
+		t.Fatalf("ref is not named: %s", ref)
+	}
+	return named
+}
+
+// TODO: maybe drop this helper and replace with a string targetUrl
+func targetUrlForRef(t *testing.T, ref reference.Named) string {
+	resolver := func(*registrytypes.IndexInfo) types.AuthConfig {
+		return types.AuthConfig{}
+	}
+	_, targetUrl, err := getHTTPTransportForReference(ref, resolver)
+	require.NoError(t, err)
+	return targetUrl
+}
+
+// TODO: disabled, can't unit test because ping registry
+func YYYTestBuildPutManifestURLFromReference(t *testing.T) {
+	var testcases = []struct {
+		ref      string
+		expected string
+	}{
+		{
+			ref:      "dnephin/dobi:0.9",
+			expected: "https://registry-1.docker.io/v2/dnephin/dobi/manifests/0.9",
+		},
+		{
+			ref:      "alpine:3.6",
+			expected: "https://registry-1.docker.io/v2/library/alpine/manifests/3.5",
+		},
+		{
+			ref:      "localhost:5555/user/foo:2.3",
+			expected: "https://localhost:5555/v2/user/foo/manifests/2.3",
+		},
+	}
+
+	for _, testcase := range testcases {
+		targetRef := namedRef(t, testcase.ref)
+		targetUrl := targetUrlForRef(t, parseRef(t, testcase.ref))
+		fmt.Println(targetRef, targetUrl)
+
+		targetRef, err := getRefWithoutDomain(targetRef)
+		fmt.Println(targetRef)
+
+		url, err := buildPutManifestURLFromReference(targetRef, targetUrl)
+		require.NoError(t, err)
+		assert.Equal(t, testcase.expected, url)
+	}
+}

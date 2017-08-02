@@ -63,17 +63,11 @@ func getManifest(ctx context.Context, repo distribution.Repository, ref referenc
 		return nil, err
 	}
 
-	if tagged, isTagged := ref.(reference.NamedTagged); isTagged {
-		tag := tagged.Tag()
-		manifest, err := manSvc.Get(ctx, "", distribution.WithTag(tag))
-		return manifest, err
+	dgst, opts, err := getManifestOptionsFromReference(ref)
+	if err != nil {
+		return nil, errors.Errorf("image manifest for %q does not exist", ref)
 	}
-	if digested, isDigested := ref.(reference.Canonical); isDigested {
-		manifest, err := manSvc.Get(ctx, digested.Digest())
-		return manifest, err
-	}
-
-	return nil, errors.Errorf("image manifest for %q does not exist", ref)
+	return manSvc.Get(ctx, dgst, opts...)
 }
 
 func pullManifestSchemaV2(ctx context.Context, ref reference.Named, repo distribution.Repository, mfst schema2.DeserializedManifest) (types.ImageManifest, error) {
