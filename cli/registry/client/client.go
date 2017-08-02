@@ -52,7 +52,11 @@ var _ RegistryClient = &client{}
 
 // MountBlob into the registry, so it can be referenced by a manifest
 func (c *client) MountBlob(ctx context.Context, sourceRef reference.Canonical, targetRef reference.Named) error {
-	repo, err := c.getRepositoryForReference(ctx, targetRef)
+	repoEndpoint, err := newDefaultRepositoryEndpoint(targetRef)
+	if err != nil {
+		return err
+	}
+	repo, err := c.getRepositoryForReference(ctx, targetRef, repoEndpoint)
 	if err != nil {
 		return err
 	}
@@ -73,7 +77,7 @@ func (c *client) MountBlob(ctx context.Context, sourceRef reference.Canonical, t
 func (c *client) PutManifest(ctx context.Context, ref reference.Named, manifest PutManifestOptions) (digest.Digest, error) {
 	dgst := digest.Digest("")
 
-	repoEndpoint, err := newRepositoryWithDefaultEndpoint(ref)
+	repoEndpoint, err := newDefaultRepositoryEndpoint(ref)
 	if err != nil {
 		return dgst, err
 	}
@@ -133,12 +137,7 @@ func buildPutManifestURLFromReference(targetRef reference.Named, repoEndpoint re
 	return manifestURL, errors.Wrap(err, "failed to build manifest URL from target reference")
 }
 
-func (c *client) getRepositoryForReference(ctx context.Context, ref reference.Named) (distribution.Repository, error) {
-	repoEndpoint, err := newRepositoryWithDefaultEndpoint(ref)
-	if err != nil {
-		return nil, err
-	}
-
+func (c *client) getRepositoryForReference(ctx context.Context, ref reference.Named, repoEndpoint repositoryEndpoint) (distribution.Repository, error) {
 	httpTransport, err := c.getHTTPTransportForRepoEndpoint(ctx, repoEndpoint)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to configure transport")

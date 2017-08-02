@@ -13,31 +13,11 @@ import (
 	"github.com/docker/distribution/registry/api/errcode"
 	"github.com/docker/distribution/registry/api/v2"
 	distclient "github.com/docker/distribution/registry/client"
-	authtypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/registry"
 	digest "github.com/opencontainers/go-digest"
 	"github.com/pkg/errors"
 	"golang.org/x/net/context"
 )
-
-type repositoryOptions struct {
-	authConfig authtypes.AuthConfig
-	userAgent  string
-	repoInfo   *registry.RepositoryInfo
-}
-
-func (opts repositoryOptions) getRepository(ctx context.Context, endpoint registry.APIEndpoint) (distribution.Repository, error) {
-	repoEndpoint := repositoryEndpoint{endpoint: endpoint, info: opts.repoInfo}
-	repoNameRef, err := reference.WithName(repoEndpoint.Name())
-	if err != nil {
-		return nil, err
-	}
-	httpTransport, err := getHTTPTransport(opts.authConfig, endpoint, repoEndpoint.Name(), opts.userAgent)
-	if err != nil {
-		return nil, err
-	}
-	return distclient.NewRepository(ctx, repoNameRef, repoEndpoint.BaseURL(), httpTransport)
-}
 
 // fetchManifest pulls a manifest from a registry and returns it. An error
 // is returned if no manifest is found matching namedRef.
@@ -230,7 +210,7 @@ func (c *client) iterateEndpoints(ctx context.Context, namedRef reference.Named,
 		return err
 	}
 
-	opts, err := c.newRepoOptionsForReference(ctx, namedRef)
+	repoInfo, err := registry.ParseRepositoryInfo(namedRef)
 	if err != nil {
 		return err
 	}
@@ -249,7 +229,8 @@ func (c *client) iterateEndpoints(ctx context.Context, namedRef reference.Named,
 			}
 		}
 
-		repo, err := opts.getRepository(ctx, endpoint)
+		repoEndpoint := repositoryEndpoint{endpoint: endpoint, info: repoInfo}
+		repo, err := c.getRepositoryForReference(ctx, namedRef, repoEndpoint)
 		if err != nil {
 			return err
 		}
@@ -282,18 +263,6 @@ func allEndpoints(namedRef reference.Named) ([]registry.APIEndpoint, error) {
 	endpoints, err := registryService.LookupPullEndpoints(reference.Domain(repoInfo.Name))
 	logrus.Debugf("Endpoints for %s: %v", namedRef, endpoints)
 	return endpoints, err
-}
-
-func (c *client) newRepoOptionsForReference(ctx context.Context, namedRef reference.Named) (repositoryOptions, error) {
-	repoInfo, err := registry.ParseRepositoryInfo(namedRef)
-	if err != nil {
-		return repositoryOptions{}, err
-	}
-	return repositoryOptions{
-		authConfig: c.authConfigResolver(ctx, repoInfo.Index),
-		repoInfo:   repoInfo,
-		userAgent:  c.userAgent,
-	}, nil
 }
 
 type notFoundError struct {

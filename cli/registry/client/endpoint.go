@@ -34,7 +34,7 @@ func (r repositoryEndpoint) BaseURL() string {
 	return r.endpoint.URL.String()
 }
 
-func newRepositoryWithDefaultEndpoint(ref reference.Named) (repositoryEndpoint, error) {
+func newDefaultRepositoryEndpoint(ref reference.Named) (repositoryEndpoint, error) {
 	repoInfo, err := registry.ParseRepositoryInfo(ref)
 	if err != nil {
 		return repositoryEndpoint{}, err
@@ -107,7 +107,7 @@ func getHTTPTransport(authConfig authtypes.AuthConfig, endpoint registry.APIEndp
 
 // RepoNameForReference returns the repository name from a reference
 func RepoNameForReference(ref reference.Named) (string, error) {
-	repo, err := newRepositoryWithDefaultEndpoint(ref)
+	repo, err := newDefaultRepositoryEndpoint(ref)
 	if err != nil {
 		return "", err
 	}
