@@ -59,15 +59,18 @@ func (c *client) MountBlob(ctx context.Context, sourceRef reference.Canonical, t
 		return err
 	}
 	lu, err := repo.Blobs(ctx).Create(ctx, distributionclient.WithMountFrom(sourceRef))
-	if err != nil {
-		if _, ok := err.(distribution.ErrBlobMounted); !ok {
-			return errors.Wrapf(err, "failed to mount blob %s to %s", sourceRef, targetRef)
-		}
+	switch err.(type) {
+	case distribution.ErrBlobMounted:
+		logrus.Debugf("mount of blob %s succeeded", sourceRef)
+		return nil
+	case nil:
+	default:
+		return errors.Wrapf(err, "failed to mount blob %s to %s", sourceRef, targetRef)
 	}
-	// TODO: why is this cancelling the mount instead of commit?
-	// registry treated this as a normal upload
+
 	lu.Cancel(ctx)
-	logrus.Debugf("mount of blob %s succeeded", sourceRef)
+	// TODO:
+	//return errors.Errorf("failed to mount blob %s to %s", sourceRef, targetRef)
 	return nil
 }
 

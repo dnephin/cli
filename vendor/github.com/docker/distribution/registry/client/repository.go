@@ -544,10 +544,11 @@ func (ms *manifests) Put(ctx context.Context, m distribution.Manifest, options .
 	}
 
 	putRequest.Header.Set("Content-Type", mediaType)
-	fmt.Printf("PUT REQUEST: %s\n", putRequest)
+	fmt.Printf("PUT REQUEST: %s\n", manifestURL)
 
 	resp, err := ms.client.Do(putRequest)
-	fmt.Printf("PUT Response: %s\n", resp)
+	body, _ := ioutil.ReadAll(resp.Body)
+	fmt.Printf("PUT Response: %s\n", body)
 	if err != nil {
 		return "", err
 	}
@@ -723,8 +724,11 @@ func (bs *blobs) Create(ctx context.Context, options ...distribution.BlobCreateO
 	if err != nil {
 		return nil, err
 	}
+	fmt.Printf("Request: %s\n", u)
 
 	resp, err := bs.client.Post(u, "", nil)
+	body, _ := ioutil.ReadAll(resp.Body)
+	fmt.Printf("RESP: %s\n", body)
 	if err != nil {
 		return nil, err
 	}

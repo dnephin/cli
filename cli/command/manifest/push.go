@@ -96,7 +96,7 @@ func buildPushRequest(manifests []types.ImageManifest, targetRef reference.Named
 	}
 
 	for _, imageManifest := range manifests {
-		repoInfo, err := registry.ParseRepositoryInfo(imageManifest.Ref)
+		manifestRepoName, err := registryclient.RepoNameForReference(imageManifest.Ref)
 		if err != nil {
 			return req, err
 		}
@@ -106,12 +106,12 @@ func buildPushRequest(manifests []types.ImageManifest, targetRef reference.Named
 		// before pushing the manifest list
 		// @TODO: Test pushing manifest list where targetRepoName == manifestRepoName
 		// for all manifests
-		manifestRepoName := reference.Path(repoInfo.Name)
 		if targetRepoName == manifestRepoName {
 			continue
 		}
 
-		blobs, err := buildBlobRequestList(imageManifest, repoInfo.Name)
+		repoName, _ := reference.WithName(manifestRepoName)
+		blobs, err := buildBlobRequestList(imageManifest, repoName)
 		if err != nil {
 			return req, err
 		}
@@ -180,13 +180,15 @@ func buildManifestDescriptor(targetRepo *registry.RepositoryInfo, imageManifest 
 	return manifest, nil
 }
 
-func buildBlobRequestList(imageManifest types.ImageManifest, targetRepoName reference.Named) ([]reference.Canonical, error) {
+func buildBlobRequestList(imageManifest types.ImageManifest, repoName reference.Named) ([]reference.Canonical, error) {
 	var blobReferences []reference.Canonical
+
 	for _, blobDigest := range imageManifest.Blobs() {
-		canonical, err := reference.WithDigest(targetRepoName, blobDigest)
+		canonical, err := reference.WithDigest(repoName, blobDigest)
 		if err != nil {
 			return nil, err
 		}
+		fmt.Printf("Blob Ref: %s %s\n", repoName, canonical)
 		blobReferences = append(blobReferences, canonical)
 	}
 	return blobReferences, nil
