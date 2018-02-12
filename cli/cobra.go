@@ -11,13 +11,14 @@ import (
 
 // SetupRootCommand sets default usage, help, and error handling for the
 // root command.
-func SetupRootCommand(rootCmd *cobra.Command) {
+func SetupRootCommand(rootCmd *cobra.Command, additional func(cmd *cobra.Command) []cobra.Command) {
 	cobra.AddTemplateFunc("hasSubCommands", hasSubCommands)
 	cobra.AddTemplateFunc("hasManagementSubCommands", hasManagementSubCommands)
 	cobra.AddTemplateFunc("operationSubCommands", operationSubCommands)
 	cobra.AddTemplateFunc("managementSubCommands", managementSubCommands)
 	cobra.AddTemplateFunc("wrappedFlagUsages", wrappedFlagUsages)
 	cobra.AddTemplateFunc("useLine", UseLine)
+	cobra.AddTemplateFunc("additionalCommands", additional)
 
 	rootCmd.SetUsageTemplate(usageTemplate)
 	rootCmd.SetHelpTemplate(helpTemplate)
@@ -148,6 +149,15 @@ Management Commands:
 Commands:
 
 {{- range operationSubCommands . }}
+  {{rpad .Name .NamePadding }} {{.Short}}
+{{- end}}
+{{- end}}
+
+{{- with additionalCommands . }}
+
+Additional Commands:
+
+{{- range .}}
   {{rpad .Name .NamePadding }} {{.Short}}
 {{- end}}
 {{- end}}

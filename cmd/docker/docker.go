@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -9,12 +8,14 @@ import (
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/command/commands"
+	"github.com/docker/cli/cli/command/commands/external"
 	cliconfig "github.com/docker/cli/cli/config"
 	"github.com/docker/cli/cli/debug"
 	cliflags "github.com/docker/cli/cli/flags"
 	"github.com/docker/docker/api/types/versions"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/term"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -30,11 +31,24 @@ func newDockerCommand(dockerCli *command.DockerCli) *cobra.Command {
 		SilenceUsage:     true,
 		SilenceErrors:    true,
 		TraverseChildren: true,
-		Args:             noArgs,
+		Args: func(_ *cobra.Command, _ []string) error {
+			// arg validation is handled in RunE to support external commands
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if opts.Version {
 				showVersion()
 				return nil
+			}
+			execCmd, err := external.Command(args)
+			switch {
+			case err != nil:
+				logrus.Warn(err.Error())
+			case execCmd != nil:
+				return execCmd()
+			case len(args) > 0:
+				return errors.Errorf(
+					"docker: '%s' is not a docker command.\nSee 'docker --help'", args[0])
 			}
 			return command.ShowHelp(dockerCli.Err())(cmd, args)
 		},
@@ -48,9 +62,17 @@ func newDockerCommand(dockerCli *command.DockerCli) *cobra.Command {
 			return isSupported(cmd, dockerCli)
 		},
 	}
-	cli.SetupRootCommand(cmd)
+	// TODO: move cli/cobra.go out of the cli package so that SetupRootCommand
+	// can call external.Help directly, without this wrapper
+	cli.SetupRootCommand(cmd, func(curCmd *cobra.Command) []cobra.Command {
+		if cmd != curCmd {
+			return nil
+		}
+		return external.Help()
+	})
 
 	flags = cmd.Flags()
+	flags.SetInterspersed(false)
 	flags.BoolVarP(&opts.Version, "version", "v", false, "Print version information and quit")
 	flags.StringVar(&opts.ConfigDir, "config", cliconfig.Dir(), "Location of client config files")
 	opts.Common.InstallFlags(flags)
@@ -140,14 +162,6 @@ func visitAll(root *cobra.Command, fn func(*cobra.Command)) {
 		visitAll(cmd, fn)
 	}
 	fn(root)
-}
-
-func noArgs(cmd *cobra.Command, args []string) error {
-	if len(args) == 0 {
-		return nil
-	}
-	return fmt.Errorf(
-		"docker: '%s' is not a docker command.\nSee 'docker --help'", args[0])
 }
 
 func main() {
